@@ -1,0 +1,1675 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Logistics ERP — Driver Management System</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Segoe UI', 'Noto Sans Thai', sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  @keyframes fadein { from { opacity:0; transform:translateY(4px);} to {opacity:1; transform:none;} }
+  .fadein { animation: fadein .2s ease; }
+</style>
+</head>
+<body class="bg-slate-100">
+<div id="root"></div>
+
+<script type="text/babel-src" id="app-src">
+const { useState, useEffect, useRef, useMemo, useContext, createContext, useCallback } = React;
+
+/* ============================================================
+   CONSTANTS
+   ============================================================ */
+const STATUS = {
+  WHITE:  { key:'WHITE',  th:'รองาน',          color:'bg-white',     ring:'ring-slate-300',  dot:'bg-slate-400',  text:'text-slate-600' },
+  ORANGE: { key:'ORANGE', th:'กำลังไปขึ้นของ', color:'bg-orange-50', ring:'ring-orange-400', dot:'bg-orange-500', text:'text-orange-700' },
+  GREEN:  { key:'GREEN',  th:'กำลังไปส่ง',      color:'bg-emerald-50',ring:'ring-emerald-400',dot:'bg-emerald-500',text:'text-emerald-700' },
+};
+const ROLES = {
+  DRIVER:      { key:'DRIVER',      th:'พนักงานขับรถ', icon:'🚚' },
+  SUPERVISOR:  { key:'SUPERVISOR',  th:'คนคุมงาน',      icon:'📋' },
+  ADMIN:       { key:'ADMIN',       th:'แอดมิน',        icon:'🛡️' },
+  SUPER_ADMIN: { key:'SUPER_ADMIN', th:'ซุปเปอร์แอดมิน',icon:'👑' },
+};
+const NAV = [
+  { path:'/dashboard',        th:'แดชบอร์ด',       icon:'📊', roles:['DRIVER','SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+  { path:'/fleet-dispatch',   th:'จัดรถ',           icon:'🚦', roles:['SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+  { path:'/financial-report', th:'รายงานการเงิน',  icon:'💰', roles:['SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+  { path:'/user-management',  th:'จัดการพนักงาน',   icon:'👥', roles:['ADMIN','SUPER_ADMIN'] },
+  { path:'/vehicle-inventory',th:'ทะเบียนรถ',       icon:'🚛', roles:['SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+  { path:'/trip-history',     th:'ประวัติทริป',     icon:'🗂️', roles:['DRIVER','SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+  { path:'/correction-log',   th:'คำขอแก้ไข',       icon:'🔓', roles:['SUPER_ADMIN'] },
+  { path:'/profile-settings', th:'ตั้งค่าโปรไฟล์',  icon:'⚙️', roles:['DRIVER','SUPERVISOR','ADMIN','SUPER_ADMIN'] },
+];
+const FUEL_PRICE = 32; // บาท/ลิตร (จำลอง)
+
+/* ============================================================
+   SEED DATA (Mock State / LocalStorage)
+   ============================================================ */
+const seedUsers = [
+  { id:'D01', name:'สมชาย ใจดี',       role:'DRIVER',      phone:'0810000001', empId:'D01', active:true,  password:'1234', notif:true, sessionId:null },
+  { id:'D02', name:'ประเสริฐ มั่นคง',  role:'DRIVER',      phone:'0810000002', empId:'D02', active:true,  password:'1234', notif:true, sessionId:null },
+  { id:'D03', name:'วิชัย รวดเร็ว',     role:'DRIVER',      phone:'0810000003', empId:'D03', active:true,  password:'1234', notif:true, sessionId:null },
+  { id:'D04', name:'อนุชา ตรงเวลา',    role:'DRIVER',      phone:'0810000004', empId:'D04', active:false, password:'1234', notif:true, sessionId:null },
+  { id:'SV01',name:'ธนพล คุมงาน',      role:'SUPERVISOR',  phone:'0820000001', empId:'SV01', active:true, password:'1234', notif:true, sessionId:null },
+  { id:'AD01',name:'กมล ผู้จัดการ',    role:'ADMIN',       phone:'0830000001', empId:'AD01', active:true, password:'1234', notif:true, sessionId:null },
+  { id:'SA01',name:'ประธาน สูงสุด',    role:'SUPER_ADMIN', phone:'0840000001', empId:'SA01', active:true, password:'1234', notif:true, sessionId:null },
+];
+const seedVehicles = [
+  { plate:'ผก-1234 กทม.',        model:'Isuzu FRR 6W',   stdKmL:3.6, driverId:'D01' },
+  { plate:'บม-5678 นนทบุรี',     model:'Hino 500 10W',   stdKmL:2.9, driverId:'D02' },
+  { plate:'ฮก-9012 สมุทรปราการ', model:'Isuzu NPR 4W',   stdKmL:4.8, driverId:'D03' },
+  { plate:'งข-3456 กทม.',        model:'Fuso Canter 4W', stdKmL:5.1, driverId:'D04' },
+  { plate:'ญว-7788 กทม.',        model:'Hino XZU 6W',    stdKmL:3.4, driverId:null },
+];
+/* หลักฐานเก็บแยกรายจุดส่ง (4 อย่าง/จุด): fuelReceipt, tollReceipt (มี OCR draft — นับเข้ายอดเมื่อ approved เท่านั้น), tarp, photo
+   ทริปที่ยังวิ่งอยู่ไม่มีฟิลด์ fuel/toll ระดับทริป — ยอดคำนวณจากใบเสร็จรายจุดที่อนุมัติแล้ว */
+const seedFleet = [
+  { id:'T-001', driverId:'D01', plate:'ผก-1234 กทม.', status:'GREEN',
+    assignedAt:Date.now()-3600e3, finishedLoadingAt:Date.now()-1200e3, distanceKm:120,
+    tarpaulinDeadline:Date.now()+25e3, tarpEscalated:false,
+    drops:[
+      { id:1, name:'บจก. รุ่งเรือง (บางนา)',    delivered:true,  photo:true,  tarp:true,  allowance:300, gps:'13.6684, 100.6100',
+        fuelReceipt:{ amount:1850, date:'10 ก.ค. 69', approved:true }, tollReceipt:{ amount:240, date:'10 ก.ค. 69', approved:true } },
+      { id:2, name:'เซ็นทรัล (พระราม 9)',       delivered:false, photo:false, tarp:false, allowance:350, gps:null, fuelReceipt:null, tollReceipt:null },
+      { id:3, name:'โลตัส (ลาดพร้าว)',          delivered:false, photo:false, tarp:false, allowance:300, gps:null, fuelReceipt:null, tollReceipt:null },
+    ],
+    bonus:0, penalty:0, penaltyReason:'' },
+  { id:'T-002', driverId:'D02', plate:'บม-5678 นนทบุรี', status:'ORANGE',
+    assignedAt:Date.now()-600e3, finishedLoadingAt:null, distanceKm:0,
+    tarpaulinDeadline:null, tarpEscalated:false,
+    drops:[
+      { id:1, name:'ไทยพาณิชย์ (สีลม)', delivered:false, photo:false, tarp:false, allowance:400, gps:null, fuelReceipt:null, tollReceipt:null },
+      { id:2, name:'แม็คโคร (จรัญ)',     delivered:false, photo:false, tarp:false, allowance:350, gps:null, fuelReceipt:null, tollReceipt:null },
+    ],
+    bonus:0, penalty:0, penaltyReason:'' },
+  { id:'T-003', driverId:'D03', plate:null, status:'WHITE', assignedAt:null, finishedLoadingAt:null,
+    distanceKm:0, tarpaulinDeadline:null, tarpEscalated:false, drops:[], bonus:0, penalty:0, penaltyReason:'' },
+  { id:'T-004', driverId:'D04', plate:null, status:'WHITE', assignedAt:null, finishedLoadingAt:null,
+    distanceKm:0, tarpaulinDeadline:null, tarpEscalated:false, drops:[], bonus:0, penalty:0, penaltyReason:'' },
+];
+const seedHistory = [
+  { id:'H-101', driverId:'D01', driver:'สมชาย ใจดี', plate:'ผก-1234 กทม.', closedAt:Date.now()-86400e3*2,
+    distanceKm:210, fuel:2100, toll:320, bonus:200, penalty:150, penaltyReason:'ไม่คลุมผ้าใบจุดที่ 2',
+    drops:[
+      { id:1, name:'บิ๊กซี (รังสิต)',  allowance:350, photo:true, tarp:true,  gps:'14.0208, 100.6055', fuel:900,  toll:120 },
+      { id:2, name:'โลตัส (นวนคร)',   allowance:350, photo:true, tarp:true,  gps:'14.1103, 100.6152', fuel:600,  toll:100 },
+      { id:3, name:'แม็คโคร (สระบุรี)',allowance:400, photo:true, tarp:false, gps:'14.5289, 100.9101', fuel:600,  toll:100 },
+    ], frozen:true, override:false },
+  { id:'H-100', driverId:'D02', driver:'ประเสริฐ มั่นคง', plate:'บม-5678 นนทบุรี', closedAt:Date.now()-86400e3*5,
+    distanceKm:95, fuel:980, toll:120, bonus:0, penalty:0, penaltyReason:'',
+    drops:[ { id:1, name:'ซีคอน (ศรีนครินทร์)', allowance:300, photo:true, tarp:true, gps:'13.6459, 100.6469', fuel:980, toll:120 } ],
+    frozen:true, override:true },
+];
+const seedCorrections = [
+  { id:'C-01', tripId:'H-100', requestedBy:'SV01', requesterName:'ธนพล คุมงาน', fieldKey:'fuel', field:'ค่าน้ำมัน',
+    oldVal:980, newVal:1180, reason:'สลิปเบลอ คีย์ยอดผิด ตรวจสอบใหม่จากบิลจริง', status:'PENDING', at:Date.now()-3600e3,
+    approvedBy:null, approvedAt:null },
+];
+
+/* ============================================================
+   HELPERS
+   ============================================================ */
+const money = (n) => '฿' + (n||0).toLocaleString('th-TH');
+const clockTime = (ms) => new Date(ms).toLocaleTimeString('th-TH', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+const dateTime = (ms) => new Date(ms).toLocaleString('th-TH', {day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+const dateOnly = (ms) => new Date(ms).toLocaleDateString('th-TH', {day:'2-digit',month:'short',year:'2-digit'});
+
+/* Payout: (Fuel + Tolls) + ( Σ allowances + bonus − penalty )
+   ทริปที่ยังวิ่งอยู่: น้ำมัน/ทางหลวงรวมจากใบเสร็จรายจุดที่ Supervisor อนุมัติแล้วเท่านั้น (Draft ไม่นับ)
+   ทริปในประวัติ: ใช้ยอดรวมที่ freeze ไว้ตอนปิดงาน (t.fuel / t.toll) */
+function computePayout(t) {
+  const drops = t.drops || [];
+  const dropFuel = drops.reduce((s,d)=>s + (d.fuelReceipt?.approved ? (d.fuelReceipt.amount||0) : 0), 0);
+  const dropToll = drops.reduce((s,d)=>s + (d.tollReceipt?.approved ? (d.tollReceipt.amount||0) : 0), 0);
+  const fuel = t.fuel ?? dropFuel;
+  const toll = t.toll ?? dropToll;
+  const reimbursable = fuel + toll;
+  const allowances = drops.reduce((s,d)=>s+(d.allowance||0),0);
+  const net = allowances + (t.bonus||0) - (t.penalty||0);
+  return { fuel, toll, reimbursable, allowances, bonus:t.bonus||0, penalty:t.penalty||0, total: reimbursable + net };
+}
+/* Fuel anomaly: actual fuel cost vs expected from vehicle std consumption */
+function fuelAnomaly(t, vehicles) {
+  const v = vehicles.find(v=>v.plate===t.plate);
+  const fuel = computePayout(t).fuel;
+  if (!v || !t.distanceKm || !fuel) return null;
+  const expectedLiters = t.distanceKm / v.stdKmL;
+  const expectedCost = expectedLiters * FUEL_PRICE;
+  const ratio = fuel / expectedCost;
+  return { expectedCost: Math.round(expectedCost), ratio, abnormal: ratio > 1.2, fuel };
+}
+
+/* ============================================================
+   GLOBAL STORE (Context + LocalStorage persist)
+   ============================================================ */
+const AppCtx = createContext(null);
+const LS_KEY = 'logi_erp_state_v2'; // v2: หลักฐาน/ใบเสร็จย้ายไปเก็บรายจุดส่ง
+const BK_KEY = 'logi_erp_backups_v1'; // สำเนาสำรองข้อมูลการเงิน (เก็บย้อนหลัง 10 ชุด)
+
+function loadState() {
+  try { const raw = localStorage.getItem(LS_KEY); if (raw) return JSON.parse(raw); } catch(e){}
+  return null;
+}
+function loadBackups() {
+  try { const raw = localStorage.getItem(BK_KEY); if (raw) return JSON.parse(raw); } catch(e){}
+  return [];
+}
+
+function useStore() {
+  const persisted = loadState();
+  const [fleet, setFleet]         = useState(persisted?.fleet   ?? seedFleet);
+  const [users, setUsers]         = useState(persisted?.users   ?? seedUsers);
+  const [vehicles, setVehicles]   = useState(persisted?.vehicles?? seedVehicles);
+  const [history, setHistory]     = useState(persisted?.history ?? seedHistory);
+  const [corrections, setCorr]    = useState(persisted?.corrections ?? seedCorrections);
+  const [logs, setLogs]           = useState(persisted?.logs ?? [
+    { at:Date.now()-3600e3, who:'ธนพล คุมงาน (SV01)', action:'จ่ายงาน', target:'T-001', detail:'ผูกทะเบียน ผก-1234, สร้าง 3 จุดส่ง' },
+    { at:Date.now()-1200e3, who:'สมชาย ใจดี (D01)', action:'ขนของขึ้นเสร็จ', target:'T-001', detail:'GPS: 13.7367, 100.5231' },
+  ]);
+
+  const [backups, setBackups] = useState(loadBackups);
+
+  useEffect(() => {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({fleet,users,vehicles,history,corrections,logs})); } catch(e){}
+  }, [fleet,users,vehicles,history,corrections,logs]);
+  useEffect(() => {
+    try { localStorage.setItem(BK_KEY, JSON.stringify(backups)); } catch(e){}
+  }, [backups]);
+
+  const log = useCallback((who,action,target,detail) =>
+    setLogs(prev => [{at:Date.now(),who,action,target,detail}, ...prev].slice(0,200)), []);
+
+  /* Scheduled Backup: เก็บสำเนา history + corrections ณ เวลานั้น (สูงสุด 10 ชุดล่าสุด) */
+  const snapshot = useCallback((reason, historySnap, correctionsSnap) =>
+    setBackups(prev => [{at:Date.now(), reason, history:historySnap, corrections:correctionsSnap}, ...prev].slice(0,10)), []);
+
+  const resetDemo = () => {
+    try { localStorage.removeItem(LS_KEY); localStorage.removeItem(BK_KEY); } catch(e){}
+    setFleet(seedFleet); setUsers(seedUsers); setVehicles(seedVehicles);
+    setHistory(seedHistory); setCorr(seedCorrections); setLogs([]); setBackups([]);
+  };
+
+  return { fleet,setFleet, users,setUsers, vehicles,setVehicles, history,setHistory,
+           corrections,setCorr, logs, log, backups, snapshot, resetDemo };
+}
+
+/* ============================================================
+   REUSABLE UI
+   ============================================================ */
+function StatusPill({ status }) {
+  const s = STATUS[status];
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ring-1 ${s.ring} ${s.text} bg-white`}>
+      <span className={`w-2 h-2 rounded-full ${s.dot}`}></span>{s.th}
+    </span>
+  );
+}
+function Stat({ label, value, dot, accent, sub }) {
+  return (
+    <div className="bg-white rounded-xl p-4 ring-1 ring-slate-200 shadow-sm">
+      <div className="flex items-center gap-2 text-slate-500 text-xs font-medium">
+        {dot && <span className={`w-2.5 h-2.5 rounded-full ${dot}`}></span>}{label}
+      </div>
+      <div className={`text-2xl md:text-3xl font-bold mt-1 ${accent||'text-slate-800'}`}>{value}</div>
+      {sub && <div className="text-[11px] text-slate-400 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
+function Modal({ title, children, onClose, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40" onClick={onClose}>
+      <div className={`bg-white rounded-2xl shadow-2xl w-full ${wide?'max-w-lg':'max-w-md'} max-h-[90vh] overflow-y-auto fadein`} onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 sticky top-0 bg-white z-10">
+          <h3 className="font-bold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 text-xl leading-none">×</button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+function Card({ title, right, children, className }) {
+  return (
+    <div className={`bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm ${className||''}`}>
+      {(title||right) && (
+        <div className="flex items-center justify-between px-4 md:px-5 py-3 border-b border-slate-100">
+          <h2 className="font-semibold text-slate-700 text-sm">{title}</h2>{right}
+        </div>
+      )}
+      <div className="p-4 md:p-5">{children}</div>
+    </div>
+  );
+}
+function Btn({ children, onClick, color='slate', size='md', disabled, className }) {
+  const colors = {
+    slate:'bg-slate-700 hover:bg-slate-800 text-white',
+    orange:'bg-orange-500 hover:bg-orange-600 text-white',
+    green:'bg-emerald-500 hover:bg-emerald-600 text-white',
+    blue:'bg-blue-500 hover:bg-blue-600 text-white',
+    red:'bg-red-500 hover:bg-red-600 text-white',
+    ghost:'bg-slate-100 hover:bg-slate-200 text-slate-700',
+    outline:'border border-slate-300 text-slate-600 hover:bg-slate-50',
+  };
+  const sizes = { sm:'text-xs px-2.5 py-1.5', md:'text-sm px-3.5 py-2', lg:'text-sm px-4 py-2.5' };
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className={`rounded-lg font-medium disabled:opacity-40 disabled:cursor-not-allowed transition ${colors[color]} ${sizes[size]} ${className||''}`}>
+      {children}
+    </button>
+  );
+}
+function Field({ label, children, hint }) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-medium text-slate-600 mb-1">{label}</label>
+      {children}
+      {hint && <p className="text-[10px] text-slate-400 mt-1">{hint}</p>}
+    </div>
+  );
+}
+const inputCls = "w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none";
+
+/* Mini bar chart (no lib) */
+function BarChart({ data, unit }) {
+  const max = Math.max(...data.map(d=>d.value), 1);
+  return (
+    <div className="flex items-end gap-2 h-40">
+      {data.map((d,i)=>(
+        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+          <div className="text-[10px] text-slate-500 mb-1">{unit==='฿'? (d.value/1000).toFixed(1)+'k' : d.value}</div>
+          <div className="w-full rounded-t-md bg-blue-400 hover:bg-blue-500 transition-all"
+               style={{height: `${(d.value/max)*100}%`, minHeight:'4px'}} title={d.value}></div>
+          <div className="text-[10px] text-slate-400 mt-1 truncate w-full text-center">{d.label}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   ESCALATION TIMER
+   ============================================================ */
+function TarpaulinTimer({ deadline, onExpire }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(()=>{ const i=setInterval(()=>setNow(Date.now()),1000); return ()=>clearInterval(i); },[]);
+  const remain = deadline ? Math.max(0, Math.floor((deadline-now)/1000)) : 0;
+  const expired = deadline && now > deadline;
+  // หมดเวลา → escalate จริง (log + แจ้ง Supervisor) ฝั่ง App มี guard ยิงครั้งเดียวต่อรอบ
+  useEffect(()=>{ if(expired && onExpire) onExpire(); }, [expired]);
+  return (
+    <div className={`mt-3 text-xs rounded-lg px-3 py-2 font-medium ${expired?'bg-red-100 text-red-700':'bg-amber-100 text-amber-700'}`}>
+      {expired ? '⏰ เกินเวลา! Escalate → แจ้งเตือน Supervisor แล้ว (ยังไม่ส่งรูปผ้าใบ)'
+               : `⏳ ส่งรูปผ้าใบภายใน ${remain} วิ (Escalation Timer)`}
+    </div>
+  );
+}
+
+/* ปุ่มอัปโหลดหลักฐานรายจุดส่ง — กลายเป็น ✓ เมื่อส่งแล้ว */
+function EvBtn({ done, onClick, color='blue', children }) {
+  if (done) return <span className="text-[10px] px-2 py-1 rounded-lg bg-slate-100 text-emerald-600 font-medium">✓ {children}</span>;
+  return <Btn size="sm" color={color} onClick={onClick}>{children}</Btn>;
+}
+
+/* ============================================================
+   TRUCK CARD (Dashboard)
+   ============================================================ */
+function TruckCard({ t }) {
+  const ctx = useContext(AppCtx);
+  const { role, currentUser, vehicles } = ctx;
+  const s = STATUS[t.status];
+  const driver = ctx.users.find(u=>u.id===t.driverId);
+  const delivered = t.drops.filter(d=>d.delivered && d.photo).length;
+  const totalDrops = t.drops.length;
+  const progress = totalDrops ? Math.round((delivered/totalDrops)*100) : 0;
+  const isMine = t.driverId === currentUser.id;
+  const canDriverAct = role==='DRIVER' && isMine;
+  const isSupervisorSide = role!=='DRIVER';
+  const payout = computePayout(t);
+  const anomaly = fuelAnomaly(t, vehicles);
+
+  return (
+    <div className={`rounded-2xl p-4 ring-1 ${s.ring} ${s.color} shadow-sm`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="font-bold text-slate-800">{driver?.name || t.driverId}</div>
+          <div className="text-xs text-slate-500 mt-0.5">🚛 {t.plate || 'ยังไม่ผูกทะเบียน'} · {t.id}</div>
+        </div>
+        <StatusPill status={t.status} />
+      </div>
+
+      {totalDrops>0 && (
+        <div className="mt-3">
+          <div className="flex justify-between text-xs text-slate-500 mb-1">
+            <span>ความคืบหน้า Multi-Drop</span><span>{delivered}/{totalDrops} จุด</span>
+          </div>
+          <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+            <div className="h-full bg-emerald-500 transition-all" style={{width:progress+'%'}}></div>
+          </div>
+        </div>
+      )}
+
+      {/* Escalation timer โชว์จนกว่าจุดปัจจุบัน (จุดแรกที่ยังไม่ส่ง) จะอัปรูปผ้าใบ */}
+      {(()=>{ const cur = t.drops.find(d=>!(d.delivered&&d.photo));
+        return t.status==='GREEN' && cur && !cur.tarp &&
+          <TarpaulinTimer deadline={t.tarpaulinDeadline} onExpire={()=>ctx.escalateTarp(t.id)} />; })()}
+      {t.status==='GREEN' && t.tarpEscalated && (
+        <div className="mt-2 text-[10px] font-semibold text-red-600 bg-red-50 rounded-lg px-2.5 py-1.5">
+          🚩 Escalated — เกินเวลาส่งรูปผ้าใบ แจ้งเตือน Supervisor แล้ว
+        </div>
+      )}
+
+      {t.status==='GREEN' && (
+        <div className="mt-3 space-y-1.5">
+          {t.drops.map(d=>{ const done = d.delivered&&d.photo;
+            return (
+            <div key={d.id} className="bg-white/70 rounded-lg px-3 py-2 text-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-bold ${done?'bg-emerald-500 text-white':'bg-slate-200 text-slate-500'}`}>
+                    {done?'✓':d.id}
+                  </span>
+                  <div>
+                    <div className="text-slate-700">{d.name}</div>
+                    {d.gps && <div className="text-[10px] text-emerald-600">📍 {d.gps}</div>}
+                  </div>
+                </div>
+                {done ? <span className="text-xs text-emerald-600 font-medium">ส่งแล้ว</span>
+                      : <span className="text-[10px] text-slate-400">รอส่ง</span>}
+              </div>
+              {/* หลักฐาน 4 ปุ่มแยกต่อจุดส่ง (ฝั่งคนขับ) — เอกสารไม่ตีกันข้ามจุด */}
+              {canDriverAct && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  <EvBtn done={!!d.fuelReceipt} onClick={()=>ctx.uploadReceipt(t.id,d.id,'fuel')}>⛽ บิลน้ำมัน</EvBtn>
+                  <EvBtn done={!!d.tollReceipt} onClick={()=>ctx.uploadReceipt(t.id,d.id,'toll')}>🛣️ บิลทางหลวง</EvBtn>
+                  <EvBtn done={d.tarp} onClick={()=>ctx.uploadTarp(t.id,d.id)}>🖼️ รูปผ้าใบ</EvBtn>
+                  <EvBtn done={done} color="green" onClick={()=>ctx.uploadProof(t.id,d.id)}>📷 รูปส่งสำเร็จ</EvBtn>
+                </div>
+              )}
+              {/* ฝั่ง Supervisor เห็นสถานะหลักฐานรายจุด (Draft = รออนุมัติ OCR) */}
+              {isSupervisorSide && (
+                <div className="flex flex-wrap gap-1.5 mt-1.5 text-[10px]">
+                  <span className={`px-1.5 py-0.5 rounded ${d.fuelReceipt?(d.fuelReceipt.approved?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'):'bg-slate-100 text-slate-400'}`}>
+                    ⛽ {d.fuelReceipt?(d.fuelReceipt.approved?'อนุมัติ':'Draft'):'—'}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${d.tollReceipt?(d.tollReceipt.approved?'bg-emerald-100 text-emerald-700':'bg-amber-100 text-amber-700'):'bg-slate-100 text-slate-400'}`}>
+                    🛣️ {d.tollReceipt?(d.tollReceipt.approved?'อนุมัติ':'Draft'):'—'}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${d.tarp?'bg-blue-100 text-blue-700':'bg-slate-100 text-slate-400'}`}>🖼️ {d.tarp?'มี':'—'}</span>
+                  <span className={`px-1.5 py-0.5 rounded ${done?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-400'}`}>📷 {done?'มี':'—'}</span>
+                </div>
+              )}
+            </div>
+          );})}
+        </div>
+      )}
+
+      {isSupervisorSide && totalDrops>0 && (
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs bg-white/60 rounded-lg p-2.5">
+          <div className="text-slate-500">บิลรวม (น้ำมัน+ทางหลวง)</div><div className="text-right font-medium">{money(payout.reimbursable)}</div>
+          <div className="text-slate-500">เบี้ยเลี้ยงรวม</div><div className="text-right font-medium">{money(payout.allowances)}</div>
+          {payout.bonus>0 && <><div className="text-blue-500">โบนัส</div><div className="text-right font-medium text-blue-500">+{money(payout.bonus)}</div></>}
+          {payout.penalty>0 && <><div className="text-red-500">หักเงิน</div><div className="text-right font-medium text-red-500">-{money(payout.penalty)}</div></>}
+          <div className="text-slate-700 font-semibold border-t border-slate-200 pt-1">ยอดจ่ายคืน</div>
+          <div className="text-right font-bold text-slate-800 border-t border-slate-200 pt-1">{money(payout.total)}</div>
+          {anomaly?.abnormal && (
+            <div className="col-span-2 text-[10px] text-red-600 bg-red-50 rounded px-2 py-1 mt-1">
+              ⚠️ น้ำมันผิดปกติ: จ่ายจริง {money(anomaly.fuel)} สูงกว่ามาตรฐาน ~{money(anomaly.expectedCost)} ({Math.round((anomaly.ratio-1)*100)}%)
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {isSupervisorSide && t.status==='WHITE' && <Btn size="sm" color="orange" onClick={()=>ctx.openAssign(t)}>จ่ายงาน</Btn>}
+        {canDriverAct && t.status==='ORANGE' && <Btn size="sm" color="green" onClick={()=>ctx.finishLoading(t.id)}>✅ ขนของขึ้นเสร็จแล้ว</Btn>}
+        {isSupervisorSide && (t.status==='GREEN'||t.status==='ORANGE') && <Btn size="sm" color="ghost" onClick={()=>ctx.openReview(t)}>🧾 ตรวจ/คีย์เงิน</Btn>}
+        {isSupervisorSide && t.status==='GREEN' && <Btn size="sm" color="slate" onClick={()=>ctx.closeTrip(t)}>🔒 ปิดงาน</Btn>}
+        {role==='DRIVER' && !isMine && t.status!=='WHITE' && <span className="text-xs text-slate-400 italic">ไม่ใช่งานของคุณ</span>}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ASSIGN MODAL
+   ============================================================ */
+function AssignModal({ truck, onClose }) {
+  const ctx = useContext(AppCtx);
+  const freeVehicles = ctx.vehicles.map(v=>v.plate);
+  const [plate, setPlate] = useState(truck.plate || freeVehicles[0]);
+  const [drops, setDrops] = useState([{ name:'', allowance:300 }]);
+  const [distanceKm, setDistanceKm] = useState(100);
+  const add = ()=> drops.length<5 && setDrops([...drops,{name:'',allowance:300}]);
+  const rm = (i)=> setDrops(drops.filter((_,x)=>x!==i));
+  const upd = (i,k,v)=> setDrops(drops.map((d,x)=>x===i?{...d,[k]:v}:d));
+  const valid = drops.every(d=>d.name.trim());
+  return (
+    <Modal title={`จ่ายงาน — ${ctx.users.find(u=>u.id===truck.driverId)?.name}`} onClose={onClose} wide>
+      <Field label="ทะเบียนรถ (จาก Vehicle Inventory)">
+        <select value={plate} onChange={e=>setPlate(e.target.value)} className={inputCls}>
+          {freeVehicles.map(v=><option key={v}>{v}</option>)}
+        </select>
+      </Field>
+      <Field label="ระยะทางประเมิน (กม.) — ใช้ตรวจสิ้นเปลืองน้ำมัน">
+        <input type="number" value={distanceKm} onChange={e=>setDistanceKm(Number(e.target.value))} className={inputCls} />
+      </Field>
+      <div className="flex items-center justify-between mb-2">
+        <label className="text-xs font-medium text-slate-600">จุดส่ง Multi-Drop ({drops.length}/5)</label>
+        <Btn size="sm" color="ghost" onClick={add} disabled={drops.length>=5}>+ เพิ่มจุด</Btn>
+      </div>
+      <div className="space-y-2 mb-4">
+        {drops.map((d,i)=>(
+          <div key={i} className="flex gap-2 items-center">
+            <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 text-xs flex items-center justify-center font-bold shrink-0">{i+1}</span>
+            <input placeholder="ชื่อ/สถานที่จุดส่ง" value={d.name} onChange={e=>upd(i,'name',e.target.value)} className={inputCls} />
+            <div className="relative shrink-0">
+              <span className="absolute left-2 top-2 text-slate-400 text-xs">฿</span>
+              <input type="number" value={d.allowance} onChange={e=>upd(i,'allowance',Number(e.target.value))}
+                className="w-24 border border-slate-300 rounded-lg pl-5 pr-2 py-2 text-sm" title="เบี้ยเลี้ยงจุดนี้" />
+            </div>
+            {drops.length>1 && <button onClick={()=>rm(i)} className="text-slate-300 hover:text-red-500 shrink-0">×</button>}
+          </div>
+        ))}
+      </div>
+      <div className="bg-amber-50 text-amber-700 text-xs rounded-lg p-2.5 mb-4">
+        🔔 จ่ายงานแล้วสถานะเปลี่ยนเป็น <b>สีส้ม</b> อัตโนมัติ + ส่ง Push เตือนคนขับเตรียมคลุมผ้าใบ
+      </div>
+      <Btn color="orange" className="w-full" onClick={()=>valid && ctx.assign(truck.id, plate, drops, distanceKm)} disabled={!valid}>
+        ยืนยันจ่ายงาน → เปลี่ยนเป็นสีส้ม
+      </Btn>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   REVIEW / FINANCE MODAL (OCR + Deduction)
+   ============================================================ */
+function ReviewModal({ truck, onClose }) {
+  const ctx = useContext(AppCtx);
+  const [bonus, setBonus] = useState(truck.bonus||0);
+  const [penalty, setPenalty] = useState(truck.penalty||0);
+  const [penaltyReason, setPenaltyReason] = useState(truck.penaltyReason||'');
+  const [editing, setEditing] = useState(null); // {dropId, kind, amount} — กำลังแก้ยอด Draft เอง
+
+  const drops = truck.drops;
+  const p = computePayout(truck); // น้ำมัน/ทางหลวงรวมจากใบเสร็จที่อนุมัติแล้วเท่านั้น
+  const allowances = p.allowances;
+  const total = p.reimbursable + allowances + bonus - penalty;
+  const reasonOk = penalty===0 || penaltyReason.trim().length>0;
+  const penaltyOk = penalty <= allowances; // หักได้ไม่เกินเบี้ยเลี้ยงรวมของทริป — ห้ามไปแตะเงินเดือน
+
+  const save = () => {
+    if (!reasonOk || !penaltyOk) return;
+    ctx.saveFinance(truck.id, {bonus,penalty,penaltyReason});
+    onClose();
+  };
+
+  return (
+    <Modal title={`ตรวจหลักฐาน & คีย์เงิน — ${truck.id}`} onClose={onClose} wide>
+      {/* บิลรายจุดจากคนขับ + OCR Draft — Supervisor ยืนยัน/แก้ก่อนถึงจะนับเข้ายอด (ไม่ auto-commit) */}
+      <div className="bg-slate-50 rounded-xl p-3 mb-4">
+        <div className="text-xs font-semibold text-slate-600 mb-2">🤖 บิลรายจุดส่ง + OCR Draft (ยืนยันก่อนถึงจะนับเข้ายอด)</div>
+        <div className="space-y-2">
+          {drops.map(d=>(
+            <div key={d.id} className="bg-white rounded-lg p-2.5 ring-1 ring-slate-100">
+              <div className="text-xs font-medium text-slate-700 mb-1">จุด {d.id}: {d.name}</div>
+              {['fuel','toll'].map(kind=>{
+                const r = kind==='fuel' ? d.fuelReceipt : d.tollReceipt;
+                const label = kind==='fuel' ? '⛽ น้ำมัน' : '🛣️ ทางหลวง';
+                const isEdit = editing && editing.dropId===d.id && editing.kind===kind;
+                return (
+                  <div key={kind} className="flex items-center justify-between text-xs py-1">
+                    <span className="text-slate-500">{label}</span>
+                    {!r && <span className="text-slate-300">ยังไม่มีบิลจากคนขับ</span>}
+                    {r && r.approved && <span className="text-emerald-600 font-medium">✓ {money(r.amount)} ({r.date})</span>}
+                    {r && !r.approved && !isEdit && (
+                      <span className="flex items-center gap-1">
+                        <span className="text-amber-600">Draft {money(r.amount)} ({r.date})</span>
+                        <Btn size="sm" color="green" onClick={()=>ctx.approveReceipt(truck.id,d.id,kind)}>✓ ยืนยัน</Btn>
+                        <Btn size="sm" color="outline" onClick={()=>setEditing({dropId:d.id,kind,amount:r.amount})}>แก้เอง</Btn>
+                      </span>
+                    )}
+                    {r && !r.approved && isEdit && (
+                      <span className="flex items-center gap-1">
+                        <input type="number" autoFocus value={editing.amount}
+                          onChange={e=>setEditing({...editing,amount:Number(e.target.value)})}
+                          className="w-24 border border-slate-300 rounded-lg px-2 py-1 text-xs" />
+                        <Btn size="sm" color="green" onClick={()=>{ctx.approveReceipt(truck.id,d.id,kind,editing.amount); setEditing(null);}}>บันทึก</Btn>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {drops.length===0 && <div className="text-xs text-slate-400">ยังไม่มีจุดส่ง</div>}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="ค่าน้ำมันรวม (บิลที่อนุมัติแล้ว)">
+          <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">{money(p.fuel)}</div></Field>
+        <Field label="ค่าทางหลวงรวม (บิลที่อนุมัติแล้ว)">
+          <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">{money(p.toll)}</div></Field>
+      </div>
+      <Field label="เบี้ยเลี้ยงรายจุด (รวมอัตโนมัติ)">
+        <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">{money(allowances)} <span className="text-slate-400">({drops.length} จุด)</span></div>
+      </Field>
+      <Field label="โบนัส"><input type="number" value={bonus} onChange={e=>setBonus(Number(e.target.value))} className={inputCls}/></Field>
+
+      <Field label="หักเงิน (จากเบี้ยเลี้ยงทริปเท่านั้น — ห้ามหักเงินเดือน)">
+        <input type="number" value={penalty} onChange={e=>setPenalty(Number(e.target.value))} className={`${inputCls} ${!penaltyOk?'border-red-400':''}`}/>
+      </Field>
+      {!penaltyOk && <div className="text-xs text-red-500 -mt-1 mb-2">⛔ หักได้ไม่เกินเบี้ยเลี้ยงรวม {money(allowances)} — เกินกว่านี้จะไปกระทบเงินเดือนประจำ ซึ่งห้ามเด็ดขาด</div>}
+      {penalty>0 && (
+        <Field label="เหตุผลการหักเงิน (บังคับกรอก)" hint="เมื่อบันทึก ระบบจะแจ้งเตือน Admin ทันที">
+          <textarea value={penaltyReason} onChange={e=>setPenaltyReason(e.target.value)} rows={2}
+            className={`${inputCls} ${!penaltyReason.trim()?'border-red-300':''}`} placeholder="เช่น ไม่คลุมผ้าใบจุดที่ 2, ส่งของช้า…"/>
+        </Field>
+      )}
+      {penalty>0 && !penaltyReason.trim() && <div className="text-xs text-red-500 -mt-1 mb-2">⚠️ ต้องระบุเหตุผลก่อนบันทึกการหักเงิน</div>}
+
+      <div className="bg-slate-800 text-white rounded-xl p-3 mt-2 text-sm">
+        <div className="flex justify-between"><span className="text-slate-300">ยอดจ่ายคืนคนขับ (รวม)</span><span className="font-bold text-lg">{money(total)}</span></div>
+        <div className="text-[10px] text-slate-400 mt-1">= (น้ำมัน+ทางหลวง) + (เบี้ยเลี้ยงรวม + โบนัส − หักเงิน)</div>
+      </div>
+      <Btn color="green" className="w-full mt-4" onClick={save} disabled={!reasonOk || !penaltyOk}>บันทึกข้อมูลการเงิน</Btn>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   PAGES
+   ============================================================ */
+function DashboardPage() {
+  const ctx = useContext(AppCtx);
+  const { fleet, role, currentUser } = ctx;
+  const counts = {
+    WHITE:fleet.filter(t=>t.status==='WHITE').length,
+    ORANGE:fleet.filter(t=>t.status==='ORANGE').length,
+    GREEN:fleet.filter(t=>t.status==='GREEN').length,
+  };
+  const mine = fleet.filter(t=>t.driverId===currentUser.id);
+  /* งานที่รอ Supervisor/Admin ดำเนินการ — ตัวเลขสรุป ชี้ไปหน้า "จัดรถ" */
+  const pendingDrafts = fleet.reduce((s,t)=>s+t.drops.filter(d=>(d.fuelReceipt&&!d.fuelReceipt.approved)||(d.tollReceipt&&!d.tollReceipt.approved)).length,0);
+  const readyToClose = fleet.filter(t=>t.status==='GREEN' && t.drops.length>0 && t.drops.every(d=>d.delivered&&d.photo)).length;
+  const escalated = fleet.filter(t=>t.tarpEscalated).length;
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-3 gap-3 md:gap-4">
+        <Stat label="รองาน (ขาว)" value={counts.WHITE} dot="bg-slate-400" accent="text-slate-700" />
+        <Stat label="กำลังไปขึ้นของ (ส้ม)" value={counts.ORANGE} dot="bg-orange-500" accent="text-orange-600" />
+        <Stat label="กำลังไปส่ง (เขียว)" value={counts.GREEN} dot="bg-emerald-500" accent="text-emerald-600" />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2">
+          {role==='DRIVER' ? (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-slate-700">งานของฉัน</h2>
+                <span className="text-xs text-slate-400">{mine.length} งาน</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {mine.map(t=><TruckCard key={t.id} t={t} />)}
+                {mine.length===0 && <div className="text-slate-400 text-sm py-8 text-center col-span-2">ไม่มีงานในขณะนี้</div>}
+              </div>
+            </>
+          ) : (
+            <Card title="🚦 งานที่รอดำเนินการ" right={<Btn size="sm" color="orange" onClick={()=>ctx.go('/fleet-dispatch')}>ไปหน้าจัดรถ →</Btn>}>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <button onClick={()=>ctx.go('/fleet-dispatch')} className="text-left bg-amber-50 hover:bg-amber-100 rounded-xl p-3 transition">
+                  <div className="text-2xl font-bold text-amber-600">{pendingDrafts}</div>
+                  <div className="text-xs text-amber-700 mt-0.5">บิล OCR Draft รอยืนยัน</div>
+                </button>
+                <button onClick={()=>ctx.go('/fleet-dispatch')} className="text-left bg-emerald-50 hover:bg-emerald-100 rounded-xl p-3 transition">
+                  <div className="text-2xl font-bold text-emerald-600">{readyToClose}</div>
+                  <div className="text-xs text-emerald-700 mt-0.5">ส่งครบทุกจุด รอปิดงาน</div>
+                </button>
+                <button onClick={()=>ctx.go('/fleet-dispatch')} className="text-left bg-red-50 hover:bg-red-100 rounded-xl p-3 transition">
+                  <div className="text-2xl font-bold text-red-600">{escalated}</div>
+                  <div className="text-xs text-red-700 mt-0.5">🚩 Escalation ผ้าใบเกินเวลา</div>
+                </button>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-3">การสั่งงานรถ ติดตามสถานะ ตรวจหลักฐานบิล และคีย์ยอดเงิน/หักเงิน ทำได้ที่หน้า <b>จัดรถ</b></p>
+            </Card>
+          )}
+        </div>
+        <div className="lg:col-span-1">
+          <h2 className="font-semibold text-slate-700 mb-3">📜 System Logs & Audit Trail</h2>
+          <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm divide-y divide-slate-100 max-h-[560px] overflow-y-auto">
+            {ctx.logs.map((l,i)=>(
+              <div key={i} className="px-4 py-3 text-xs">
+                <div className="flex justify-between text-slate-400"><span>{clockTime(l.at)}</span><span className="font-mono">{l.target}</span></div>
+                <div className="text-slate-700 font-medium mt-0.5">{l.action}</div>
+                <div className="text-slate-500">{l.who}</div>
+                <div className="text-slate-400 mt-0.5">{l.detail}</div>
+              </div>
+            ))}
+            {ctx.logs.length===0 && <div className="text-slate-400 text-xs p-4 text-center">ยังไม่มี Log</div>}
+          </div>
+          <p className="text-[10px] text-slate-400 mt-2">บันทึกทุก Action โปร่งใส 100% — ใคร / ทำอะไร / ข้อมูลไหน / เวลา</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* หน้า "จัดรถ" — รายชื่อคนขับแบบย่อ + แถบสีสถานะ; กดชื่อถึงจะเห็นรายละเอียด
+   (จุดส่ง หลักฐานบิล คีย์เงิน/หักเงิน จ่ายงาน ปิดงาน — ทั้งหมดอยู่ใน modal รายละเอียด) */
+function FleetDispatchPage() {
+  const ctx = useContext(AppCtx);
+  const { fleet, users } = ctx;
+  const [filter, setFilter] = useState('ALL');
+  const [search, setSearch] = useState('');
+  const [selId, setSelId] = useState(null); // ทริปที่กดดูรายละเอียด
+  const chips = [
+    { key:'ALL',    th:'ทั้งหมด',          n:fleet.length },
+    { key:'WHITE',  th:'รองาน',            n:fleet.filter(t=>t.status==='WHITE').length },
+    { key:'ORANGE', th:'กำลังไปขึ้นของ',   n:fleet.filter(t=>t.status==='ORANGE').length },
+    { key:'GREEN',  th:'กำลังไปส่ง',        n:fleet.filter(t=>t.status==='GREEN').length },
+  ];
+  const q = search.trim().toLowerCase();
+  const matchSearch = t => {
+    if (!q) return true;
+    const u = users.find(x=>x.id===t.driverId);
+    return (u?.name||'').toLowerCase().includes(q) || (t.plate||'').toLowerCase().includes(q)
+      || t.id.toLowerCase().includes(q) || (u?.id||'').toLowerCase().includes(q);
+  };
+  const visible = (filter==='ALL' ? fleet : fleet.filter(t=>t.status===filter)).filter(matchSearch);
+  const sel = selId ? fleet.find(t=>t.id===selId) : null; // อ้างจาก fleet เสมอ ให้ข้อมูลใน modal สดตลอด
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-2">
+        {chips.map(c=>(
+          <button key={c.key} onClick={()=>setFilter(c.key)}
+            className={`text-xs px-3 py-1.5 rounded-full font-medium transition ${filter===c.key?'bg-slate-800 text-white':'bg-white ring-1 ring-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+            {c.th} <span className={filter===c.key?'text-slate-300':'text-slate-400'}>({c.n})</span>
+          </button>
+        ))}
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 ค้นหาคนขับ / ทะเบียนรถ / รหัส…"
+          className="ml-auto w-full sm:w-64 border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-blue-200 focus:border-blue-400 outline-none bg-white" />
+      </div>
+      <div className="bg-white rounded-2xl ring-1 ring-slate-200 shadow-sm divide-y divide-slate-100 overflow-hidden">
+        {visible.map(t=>{
+          const s = STATUS[t.status];
+          const driver = users.find(u=>u.id===t.driverId);
+          const delivered = t.drops.filter(d=>d.delivered&&d.photo).length;
+          return (
+            <button key={t.id} onClick={()=>setSelId(t.id)}
+              className="w-full flex items-center gap-3 px-3 md:px-4 py-3 hover:bg-slate-50 text-left transition">
+              <span className={`w-1.5 self-stretch rounded-full ${s.dot}`}></span>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium text-slate-800 truncate">
+                  {driver?.name || t.driverId}
+                  {t.tarpEscalated && <span className="ml-1.5 text-[10px] text-red-600 font-semibold">🚩 ผ้าใบเกินเวลา</span>}
+                </div>
+                <div className="text-xs text-slate-400 truncate">🚛 {t.plate || 'ยังไม่ผูกทะเบียน'} · {t.id}</div>
+              </div>
+              {t.drops.length>0 && <span className="text-xs text-slate-500 shrink-0">{delivered}/{t.drops.length} จุด</span>}
+              <StatusPill status={t.status} />
+              <span className="text-slate-300 shrink-0">›</span>
+            </button>
+          );
+        })}
+        {visible.length===0 && <div className="text-slate-400 text-sm py-8 text-center">{q?`ไม่พบ "${search.trim()}"`:'ไม่มีรถในหมวดนี้'}</div>}
+      </div>
+      {sel && (
+        <Modal title={`${users.find(u=>u.id===sel.driverId)?.name || sel.driverId} — ${sel.id}`} onClose={()=>setSelId(null)} wide>
+          <TruckCard t={sel} />
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function FinancialReportPage() {
+  const ctx = useContext(AppCtx);
+  const { history, fleet } = ctx;
+  const all = [...history, ...fleet.filter(t=>t.drops.length>0)];
+  const totFuel = all.reduce((s,t)=>s+computePayout(t).fuel,0);
+  const totToll = all.reduce((s,t)=>s+computePayout(t).toll,0);
+  const totAllow = all.reduce((s,t)=>s+computePayout(t).allowances,0);
+  const totPenalty = all.reduce((s,t)=>s+(t.penalty||0),0);
+  const grand = all.reduce((s,t)=>s+computePayout(t).total,0);
+  const chart = [
+    {label:'ก.พ.', value:42000},{label:'มี.ค.', value:51000},{label:'เม.ย.', value:47500},
+    {label:'พ.ค.', value:58000},{label:'มิ.ย.', value:53500},{label:'ก.ค.', value:totFuel+totToll+totAllow},
+  ];
+  /* ยอดน้ำมัน/ทางหลวงรายจุด: ประวัติเก็บ d.fuel/d.toll ไว้ตอนปิดงาน, ทริปที่ยังวิ่งอยู่ดูจากใบเสร็จที่อนุมัติ */
+  const dropFuel = d => d.fuel ?? (d.fuelReceipt?.approved ? d.fuelReceipt.amount : 0);
+  const dropToll = d => d.toll ?? (d.tollReceipt?.approved ? d.tollReceipt.amount : 0);
+
+  const csvExport = () => {
+    const esc = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+    const rows = [['ทริป','ประเภทแถว','จุดส่ง','คนขับ','ทะเบียน','น้ำมัน','ทางหลวง','เบี้ยเลี้ยง','โบนัส','หักเงิน','ยอดรวม']];
+    all.forEach(t=>{
+      const p = computePayout(t); const drv = ctx.users.find(u=>u.id===t.driverId);
+      rows.push([t.id,'รวมทริป','',t.driver||drv?.name||'',t.plate||'',p.fuel,p.toll,p.allowances,p.bonus,p.penalty,p.total]);
+      (t.drops||[]).forEach(d=>rows.push([t.id,'จุดส่งย่อย',`${d.id}. ${d.name}`,'','',dropFuel(d),dropToll(d),d.allowance||0,'','','']));
+    });
+    const csv = '\uFEFF' + rows.map(r=>r.map(esc).join(',')).join('\r\n'); // BOM ให้ Excel อ่านไทยถูก
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `financial-report-${new Date().toISOString().slice(0,10)}.csv`;
+    a.click(); URL.revokeObjectURL(a.href);
+    ctx.log(ctx.whoAmI,'Export รายงานการเงิน (CSV)','—',`${all.length} ทริป พร้อมรายละเอียดจุดส่งย่อย`);
+    ctx.notify('📤 ดาวน์โหลด CSV แล้ว — เปิดใน Excel ได้','green');
+  };
+  const downloadBackup = (b) => {
+    const blob = new Blob([JSON.stringify(b,null,2)], {type:'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `backup-financial-${new Date(b.at).toISOString().replace(/[:.]/g,'-')}.json`;
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  const backupNow = () => {
+    ctx.snapshot('Manual backup', ctx.history, ctx.corrections);
+    ctx.log(ctx.whoAmI,'สำรองข้อมูลการเงิน (Manual)','—',`${ctx.history.length} ทริปในประวัติ`);
+    ctx.notify('🗄️ สำรองข้อมูลแล้ว','green');
+  };
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Stat label="ค่าน้ำมันรวม" value={money(totFuel)} accent="text-slate-800" />
+        <Stat label="ค่าทางหลวงรวม" value={money(totToll)} accent="text-slate-800" />
+        <Stat label="เบี้ยเลี้ยงรวม" value={money(totAllow)} accent="text-slate-800" />
+        <Stat label="หักเงินรวม" value={'-'+money(totPenalty)} accent="text-red-600" />
+      </div>
+      <Card title="ค่าใช้จ่ายบริษัทรายเดือน (บาท)" right={
+        <div className="flex gap-2">
+          <Btn size="sm" color="outline" onClick={csvExport}>📊 Export Excel/CSV</Btn>
+          <Btn size="sm" color="outline" onClick={()=>ctx.notify('📤 กำลัง Export รายงานเป็น PDF … (จำลอง)','blue')}>📄 Export PDF</Btn>
+        </div>
+      }>
+        <BarChart data={chart} unit="฿" />
+      </Card>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <Card title="สรุปรายทริป (คลี่รายจุดส่งย่อย)" className="lg:col-span-2">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead><tr className="text-left text-slate-400 text-xs border-b border-slate-100">
+                <th className="py-2">ทริป</th><th>คนขับ / จุดส่ง</th><th className="text-right">น้ำมัน</th><th className="text-right">ทางหลวง</th><th className="text-right">เบี้ยเลี้ยง</th><th className="text-right">ยอดรวม</th>
+              </tr></thead>
+              <tbody>
+                {all.map(t=>{ const p=computePayout(t); const drv=ctx.users.find(u=>u.id===t.driverId);
+                  return (<React.Fragment key={t.id}>
+                    <tr className="border-b border-slate-50">
+                      <td className="py-2 font-mono text-xs">{t.id}</td>
+                      <td className="text-slate-600">{t.driver||drv?.name}</td>
+                      <td className="text-right">{money(p.fuel)}</td>
+                      <td className="text-right">{money(p.toll)}</td>
+                      <td className="text-right">{money(p.allowances)}</td>
+                      <td className="text-right font-semibold">{money(p.total)}</td>
+                    </tr>
+                    {(t.drops||[]).map(d=>(
+                      <tr key={t.id+'-'+d.id} className="text-xs text-slate-400 bg-slate-50/60 border-b border-slate-50">
+                        <td className="py-1 pl-3">└ จุด {d.id}</td>
+                        <td className="truncate max-w-[160px]">{d.name}</td>
+                        <td className="text-right">{money(dropFuel(d))}</td>
+                        <td className="text-right">{money(dropToll(d))}</td>
+                        <td className="text-right">{money(d.allowance)}</td>
+                        <td></td>
+                      </tr>
+                    ))}
+                  </React.Fragment>);})}
+              </tbody>
+              <tfoot><tr className="font-bold text-slate-800"><td className="py-2" colSpan={5}>รวมทั้งสิ้น</td><td className="text-right">{money(grand)}</td></tr></tfoot>
+            </table>
+          </div>
+        </Card>
+        <Card title="🗄️ Scheduled Backup — ข้อมูลการเงิน">
+          <div className="space-y-3 text-sm">
+            <div className="flex items-center justify-between"><span className="text-slate-600">สำรองอัตโนมัติเมื่อปิดทริป</span>
+              <span className="text-xs px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-medium">เปิดใช้งาน</span></div>
+            <Btn size="sm" color="ghost" className="w-full" onClick={backupNow}>สำรองข้อมูลเดี๋ยวนี้</Btn>
+            <div className="text-xs font-medium text-slate-500">สำเนาย้อนหลัง ({ctx.backups.length}/10)</div>
+            <div className="space-y-1.5 max-h-44 overflow-y-auto">
+              {ctx.backups.map((b,i)=>(
+                <div key={i} className="flex items-center justify-between text-xs bg-slate-50 rounded-lg px-2.5 py-1.5">
+                  <div>
+                    <div className="text-slate-600">{b.reason}</div>
+                    <div className="text-slate-400 text-[10px]">{dateTime(b.at)} · {b.history.length} ทริป</div>
+                  </div>
+                  <button className="text-blue-500 hover:underline shrink-0 ml-2" onClick={()=>downloadBackup(b)}>⬇ JSON</button>
+                </div>
+              ))}
+              {ctx.backups.length===0 && <div className="text-xs text-slate-400">ยังไม่มีสำเนา — ระบบจะสร้างให้อัตโนมัติเมื่อปิดทริป</div>}
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function UserManagementPage() {
+  const ctx = useContext(AppCtx);
+  const { users } = ctx;
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({name:'', phone:'', role:'DRIVER'});
+  const addUser = () => {
+    if (!form.name.trim()) return;
+    const id = form.role.slice(0,2).toUpperCase()+String(users.length+1).padStart(2,'0');
+    ctx.setUsers([...users, {id, name:form.name, phone:form.phone, empId:id, role:form.role, active:true}]);
+    ctx.log(ctx.whoAmI,'เพิ่มพนักงาน',id,`${form.name} (${ROLES[form.role].th})`);
+    setAdding(false); setForm({name:'',phone:'',role:'DRIVER'}); ctx.notify('✅ เพิ่มพนักงานแล้ว','green');
+  };
+  const changeRole = (u,role) => {
+    ctx.setUsers(users.map(x=>x.id===u.id?{...x,role}:x));
+    ctx.log(ctx.whoAmI,'เปลี่ยน Role',u.id,`${u.name}: ${ROLES[u.role].th} → ${ROLES[role].th}`);
+  };
+  const toggle = (u) => {
+    ctx.setUsers(users.map(x=>x.id===u.id?{...x,active:!x.active}:x));
+    ctx.log(ctx.whoAmI, u.active?'ระงับบัญชี':'เปิดใช้บัญชี', u.id, u.name);
+  };
+  /* แก้ไขข้อมูลพนักงาน (Admin/Super Admin) — updateUser จะ sync currentUser ให้ด้วยถ้าแก้ตัวเอง */
+  const [editing, setEditing] = useState(null);
+  const [eform, setEform] = useState({name:'', phone:''});
+  const openEdit = (u) => { setEditing(u); setEform({name:u.name, phone:u.phone}); };
+  const saveEdit = () => {
+    if (!eform.name.trim()) return;
+    ctx.updateUser(editing.id, {name:eform.name.trim(), phone:eform.phone.trim()});
+    ctx.log(ctx.whoAmI,'แก้ไขข้อมูลพนักงาน',editing.id,
+      `${editing.name}${editing.name!==eform.name.trim()?` → ${eform.name.trim()}`:''} · เบอร์ ${eform.phone.trim()}`);
+    ctx.notify('💾 บันทึกข้อมูลพนักงานแล้ว','green');
+    setEditing(null);
+  };
+  const resetPw = () => {
+    ctx.updateUser(editing.id, {password:'1234'});
+    ctx.log(ctx.whoAmI,'รีเซ็ตรหัสผ่าน',editing.id,`${editing.name} → ค่าเริ่มต้น`);
+    ctx.notify('🔑 รีเซ็ตรหัสผ่านเป็นค่าเริ่มต้น (1234) แล้ว','slate');
+  };
+  return (
+    <Card title={`จัดการพนักงาน & Role (${users.length} คน)`} right={<Btn size="sm" color="blue" onClick={()=>setAdding(true)}>+ เพิ่มพนักงาน</Btn>}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-slate-400 text-xs border-b border-slate-100">
+            <th className="py-2">รหัส</th><th>ชื่อ</th><th>เบอร์โทร</th><th>Role</th><th>สถานะ</th><th></th>
+          </tr></thead>
+          <tbody>
+            {users.map(u=>(
+              <tr key={u.id} className="border-b border-slate-50">
+                <td className="py-2 font-mono text-xs">{u.id}</td>
+                <td className="text-slate-700 font-medium">{u.name}</td>
+                <td className="text-slate-500">{u.phone}</td>
+                <td>
+                  <select value={u.role} onChange={e=>changeRole(u,e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1">
+                    {Object.values(ROLES).map(r=><option key={r.key} value={r.key}>{r.icon} {r.th}</option>)}
+                  </select>
+                </td>
+                <td><span className={`text-xs px-2 py-0.5 rounded-full ${u.active?'bg-emerald-100 text-emerald-700':'bg-slate-100 text-slate-400'}`}>{u.active?'ใช้งาน':'ระงับ'}</span></td>
+                <td className="text-right whitespace-nowrap">
+                  <button onClick={()=>openEdit(u)} className="text-xs text-blue-500 hover:underline mr-3">แก้ไข</button>
+                  <button onClick={()=>toggle(u)} className="text-xs text-slate-500 hover:underline">{u.active?'ระงับ':'เปิด'}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {adding && (
+        <Modal title="เพิ่มพนักงานใหม่" onClose={()=>setAdding(false)}>
+          <Field label="ชื่อ-สกุล"><input className={inputCls} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></Field>
+          <Field label="เบอร์โทร (ใช้ Login)"><input className={inputCls} value={form.phone} onChange={e=>setForm({...form,phone:e.target.value})}/></Field>
+          <Field label="Role"><select className={inputCls} value={form.role} onChange={e=>setForm({...form,role:e.target.value})}>
+            {Object.values(ROLES).map(r=><option key={r.key} value={r.key}>{r.th}</option>)}</select></Field>
+          <Btn color="blue" className="w-full mt-2" onClick={addUser}>บันทึก</Btn>
+        </Modal>
+      )}
+      {editing && (
+        <Modal title={`แก้ไขข้อมูลพนักงาน — ${editing.id}`} onClose={()=>setEditing(null)}>
+          <Field label="ชื่อ-สกุล"><input className={inputCls} value={eform.name} onChange={e=>setEform({...eform,name:e.target.value})}/></Field>
+          <Field label="เบอร์โทร (ใช้ Login)"><input className={inputCls} value={eform.phone} onChange={e=>setEform({...eform,phone:e.target.value})}/></Field>
+          <div className="text-[11px] text-slate-400 mb-3">Role และสถานะบัญชี แก้ได้จากตารางโดยตรง · การแก้ไขทุกครั้งถูกบันทึกลง Audit Log</div>
+          <div className="flex gap-2">
+            <Btn color="outline" className="flex-1" onClick={resetPw}>🔑 รีเซ็ตรหัสผ่าน (1234)</Btn>
+            <Btn color="blue" className="flex-1" onClick={saveEdit} disabled={!eform.name.trim()}>บันทึก</Btn>
+          </div>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+function VehicleInventoryPage() {
+  const ctx = useContext(AppCtx);
+  const { vehicles, users } = ctx;
+  const drivers = users.filter(u=>u.role==='DRIVER');
+  const [adding, setAdding] = useState(false);
+  const [form, setForm] = useState({plate:'', model:'', stdKmL:3.5, driverId:''});
+  const add = () => {
+    if(!form.plate.trim()) return;
+    ctx.setVehicles([...vehicles, {...form, stdKmL:Number(form.stdKmL), driverId:form.driverId||null}]);
+    ctx.log(ctx.whoAmI,'ขึ้นทะเบียนรถ',form.plate,`${form.model} · std ${form.stdKmL} กม./ล.`);
+    setAdding(false); setForm({plate:'',model:'',stdKmL:3.5,driverId:''}); ctx.notify('🚛 ขึ้นทะเบียนรถแล้ว','green');
+  };
+  const bind = (plate, driverId) => {
+    ctx.setVehicles(vehicles.map(v=>v.plate===plate?{...v,driverId:driverId||null}:v));
+    ctx.log(ctx.whoAmI,'ผูกคนขับกับรถ',plate, driverId? users.find(u=>u.id===driverId)?.name : 'ปลดการผูก');
+  };
+  return (
+    <Card title={`ทะเบียนรถ (${vehicles.length} คัน)`} right={<Btn size="sm" color="blue" onClick={()=>setAdding(true)}>+ ขึ้นทะเบียนรถ</Btn>}>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        {vehicles.map(v=>(
+          <div key={v.plate} className="border border-slate-200 rounded-xl p-3">
+            <div className="flex items-center justify-between">
+              <div className="font-semibold text-slate-800">🚛 {v.plate}</div>
+              <span className="text-xs text-slate-400">{v.stdKmL} กม./ลิตร</span>
+            </div>
+            <div className="text-xs text-slate-500 mt-0.5">{v.model}</div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-xs text-slate-500">คนขับ:</span>
+              <select value={v.driverId||''} onChange={e=>bind(v.plate,e.target.value)} className="text-xs border border-slate-200 rounded-lg px-2 py-1 flex-1">
+                <option value="">— ยังไม่ผูก —</option>
+                {drivers.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}
+              </select>
+            </div>
+          </div>
+        ))}
+      </div>
+      {adding && (
+        <Modal title="ขึ้นทะเบียนรถใหม่" onClose={()=>setAdding(false)}>
+          <Field label="ทะเบียนรถ"><input className={inputCls} value={form.plate} onChange={e=>setForm({...form,plate:e.target.value})}/></Field>
+          <Field label="รุ่น/ประเภท"><input className={inputCls} value={form.model} onChange={e=>setForm({...form,model:e.target.value})}/></Field>
+          <Field label="อัตราสิ้นเปลืองมาตรฐาน (กม./ลิตร)" hint="ใช้ตรวจจับการใช้น้ำมันผิดปกติ">
+            <input type="number" step="0.1" className={inputCls} value={form.stdKmL} onChange={e=>setForm({...form,stdKmL:e.target.value})}/></Field>
+          <Field label="ผูกกับคนขับ"><select className={inputCls} value={form.driverId} onChange={e=>setForm({...form,driverId:e.target.value})}>
+            <option value="">— ยังไม่ผูก —</option>{drivers.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></Field>
+          <Btn color="blue" className="w-full mt-2" onClick={add}>บันทึก</Btn>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
+/* ฟิลด์เงินที่ขอปลดล็อกแก้ได้ — ระดับทริป + เบี้ยเลี้ยงรายจุด */
+const corrFields = (h) => [
+  { key:'fuel',    label:'ค่าน้ำมัน',  val:h.fuel||0 },
+  { key:'toll',    label:'ค่าทางหลวง', val:h.toll||0 },
+  { key:'bonus',   label:'โบนัส',      val:h.bonus||0 },
+  { key:'penalty', label:'หักเงิน',    val:h.penalty||0 },
+  ...(h.drops||[]).map(d=>({ key:`allowance:${d.id}`, label:`เบี้ยเลี้ยงจุด ${d.id} (${d.name})`, val:d.allowance||0 })),
+];
+
+function TripHistoryPage() {
+  const ctx = useContext(AppCtx);
+  const { history, role, currentUser, users } = ctx;
+  const isDriver = role==='DRIVER';
+  const [selDriver, setSelDriver] = useState(isDriver ? currentUser.id : null); // คนขับเห็นของตัวเองทันที
+  const [month, setMonth] = useState('');
+  const [detail, setDetail] = useState(null);
+  const [corr, setCorr] = useState(null); // {h, fieldKey, newVal, reason} — ฟอร์มขอปลดล็อก
+  const evChip = ok => `px-1.5 py-0.5 rounded ${ok?'bg-emerald-50 text-emerald-600 ring-1 ring-emerald-200':'bg-red-50 text-red-500 ring-1 ring-red-200'}`;
+
+  const tripsOf = id => history.filter(h=>h.driverId===id);
+  const mkey = ms => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; };
+  const monthTH = k => { const [y,m] = k.split('-'); return new Date(Number(y), Number(m)-1, 1).toLocaleDateString('th-TH',{month:'long',year:'numeric'}); };
+
+  /* มุมมองแรก (Supervisor ขึ้นไป): รายชื่อคนขับ — กดชื่อถึงจะเห็นประวัติรายเดือนของคนนั้น */
+  if (!selDriver) {
+    const drivers = users.filter(u=>u.role==='DRIVER');
+    return (
+      <Card title="ประวัติทริป — เลือกคนขับที่ต้องการดู">
+        <div className="divide-y divide-slate-100">
+          {drivers.map(u=>{ const n = tripsOf(u.id).length;
+            return (
+              <button key={u.id} onClick={()=>{setSelDriver(u.id); setMonth('');}}
+                className="w-full flex items-center gap-3 px-2 py-3 hover:bg-slate-50 text-left transition">
+                <div className="w-9 h-9 rounded-full bg-slate-800 text-white flex items-center justify-center text-sm font-bold shrink-0">{u.name[0]}</div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium text-slate-800 truncate">{u.name}</div>
+                  <div className="text-xs text-slate-400">{u.id} · {u.phone}</div>
+                </div>
+                <span className="text-xs text-slate-500 shrink-0">{n} ทริป</span>
+                <span className="text-slate-300 shrink-0">›</span>
+              </button>
+            );})}
+          {drivers.length===0 && <div className="text-slate-400 text-sm py-6 text-center">ยังไม่มีคนขับในระบบ</div>}
+        </div>
+      </Card>
+    );
+  }
+
+  const selUser = users.find(u=>u.id===selDriver);
+  const selTrips = tripsOf(selDriver);
+  const months = [...new Set(selTrips.map(h=>mkey(h.closedAt)))].sort().reverse();
+  const activeMonth = months.includes(month) ? month : (months[0]||'');
+  const visible = selTrips.filter(h=>mkey(h.closedAt)===activeMonth);
+  const sumTotal = visible.reduce((s,h)=>s+computePayout(h).total,0);
+  return (
+    <Card title={`ประวัติทริป — ${selUser?.name || selDriver}`} right={
+      <div className="flex items-center gap-2">
+        {months.length>0 && (
+          <select value={activeMonth} onChange={e=>setMonth(e.target.value)}
+            className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white">
+            {months.map(k=><option key={k} value={k}>{monthTH(k)}</option>)}
+          </select>
+        )}
+        {!isDriver && <Btn size="sm" color="ghost" onClick={()=>setSelDriver(null)}>← เลือกคนอื่น</Btn>}
+      </div>
+    }>
+      <div className="flex items-center justify-between text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2 mb-3">
+        <span>{months.length ? monthTH(activeMonth) : '—'} · {visible.length} ทริป</span>
+        <span>ยอดรวมเดือนนี้ <b className="text-slate-700">{money(sumTotal)}</b></span>
+      </div>
+      <div className="space-y-2">
+        {visible.map(h=>{ const p=computePayout(h);
+          return (
+          <div key={h.id} className="flex items-center justify-between border border-slate-200 rounded-xl px-4 py-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-slate-400">{h.id}</span>
+                <span className="font-medium text-slate-700">{h.driver}</span>
+                <span className="w-2 h-2 rounded-full bg-slate-400" title="ปิดงานแล้ว (ขาว)"></span>
+                {h.override && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">Override</span>}
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">🔒 ล็อกแล้ว</span>
+              </div>
+              <div className="text-xs text-slate-400 mt-0.5">{h.plate} · {h.drops.length} จุดส่ง · ปิด {dateOnly(h.closedAt)}</div>
+            </div>
+            <div className="text-right">
+              <div className="font-bold text-slate-800">{money(p.total)}</div>
+              <button onClick={()=>setDetail(h)} className="text-xs text-blue-500 hover:underline">ดูรายละเอียด</button>
+            </div>
+          </div>);})}
+        {visible.length===0 && <div className="text-slate-400 text-sm py-6 text-center">ยังไม่มีประวัติในเดือนนี้</div>}
+      </div>
+      {detail && (
+        <Modal title={`รายละเอียดทริป ${detail.id}`} onClose={()=>setDetail(null)} wide>
+          <div className="text-sm space-y-3">
+            <div className="grid grid-cols-2 gap-2 text-xs bg-slate-50 rounded-lg p-3">
+              <div className="text-slate-500">คนขับ</div><div className="text-right font-medium">{detail.driver}</div>
+              <div className="text-slate-500">ทะเบียน</div><div className="text-right font-medium">{detail.plate}</div>
+              <div className="text-slate-500">ระยะทาง</div><div className="text-right">{detail.distanceKm} กม.</div>
+              <div className="text-slate-500">ปิดงาน</div><div className="text-right">{dateTime(detail.closedAt)}</div>
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-slate-600 mb-1">จุดส่ง Multi-Drop & หลักฐาน (ล็อกถาวร)</div>
+              {detail.drops.map(d=>(
+                <div key={d.id} className="border-b border-slate-50 py-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-600">{d.id}. {d.name}</span>
+                    <span className="text-xs text-slate-400">{money(d.allowance)}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[10px]">
+                    <span className={evChip(d.photo)}>📷 รูปส่ง{d.photo?'':' (ไม่มี)'}</span>
+                    <span className={evChip(d.tarp)}>🖼️ ผ้าใบ{d.tarp?'':' (ไม่มี)'}</span>
+                    {((d.fuel||0)>0 || (d.toll||0)>0) &&
+                      <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">⛽ {money(d.fuel)} · 🛣️ {money(d.toll)}</span>}
+                    {d.gps && <span className="text-emerald-600">📍 {d.gps}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {detail.penalty>0 && <div className="text-xs bg-red-50 text-red-600 rounded-lg p-2">หักเงิน {money(detail.penalty)} — เหตุผล: {detail.penaltyReason}</div>}
+            <div className="bg-slate-800 text-white rounded-lg p-3 text-sm flex justify-between">
+              <span className="text-slate-300">ยอดจ่ายคืน (ล็อกถาวร)</span><span className="font-bold">{money(computePayout(detail).total)}</span>
+            </div>
+            {(role==='SUPERVISOR') && (
+              <Btn color="outline" className="w-full" onClick={()=>{ const fs=corrFields(detail); setCorr({h:detail, fieldKey:fs[0].key, newVal:fs[0].val, reason:''}); setDetail(null); }}>
+                🔓 ขอปลดล็อกเพื่อแก้ไข (Request for Correction)
+              </Btn>
+            )}
+          </div>
+        </Modal>
+      )}
+      {/* ฟอร์มขอปลดล็อก: เลือกฟิลด์ → เห็นค่าเดิม → กรอกค่าใหม่ + เหตุผล (บังคับ) → ส่งให้ Super Admin */}
+      {corr && (()=>{ const fields = corrFields(corr.h); const f = fields.find(x=>x.key===corr.fieldKey);
+        const same = Number(corr.newVal)===f.val;
+        const valid = corr.reason.trim().length>0 && !same;
+        return (
+        <Modal title={`🔓 ขอปลดล็อกแก้ไข — ${corr.h.id}`} onClose={()=>setCorr(null)}>
+          <div className="text-xs bg-amber-50 text-amber-700 rounded-lg p-2.5 mb-3">
+            ตัวเลขทริปนี้ถูกล็อกถาวร (Freeze on Close) — แก้ได้ทางคำขอนี้เท่านั้น และต้องให้ Super Admin อนุมัติ ระบบจะบันทึกค่าเก่า/ใหม่ ผู้ขอ ผู้อนุมัติ และเวลาไว้ทั้งหมด
+          </div>
+          <Field label="ฟิลด์ที่ขอแก้">
+            <select className={inputCls} value={corr.fieldKey}
+              onChange={e=>{ const nf=fields.find(x=>x.key===e.target.value); setCorr({...corr, fieldKey:e.target.value, newVal:nf.val}); }}>
+              {fields.map(x=><option key={x.key} value={x.key}>{x.label} (ปัจจุบัน {money(x.val)})</option>)}
+            </select>
+          </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="ค่าเดิม (ล็อก)">
+              <div className="text-sm bg-slate-50 rounded-lg px-3 py-2 text-red-500 line-through">{money(f.val)}</div></Field>
+            <Field label="ค่าใหม่ที่ขอ">
+              <input type="number" className={inputCls} value={corr.newVal} onChange={e=>setCorr({...corr,newVal:Number(e.target.value)})}/></Field>
+          </div>
+          <Field label="เหตุผล (บังคับกรอก)">
+            <textarea rows={2} className={`${inputCls} ${!corr.reason.trim()?'border-red-300':''}`} value={corr.reason}
+              onChange={e=>setCorr({...corr,reason:e.target.value})} placeholder="เช่น สลิปเบลอ คีย์ยอดผิด ตรวจใหม่จากบิลจริง…"/>
+          </Field>
+          {same && <div className="text-xs text-amber-600 mb-2">ค่าใหม่ยังเท่ากับค่าเดิม</div>}
+          <Btn color="blue" className="w-full" disabled={!valid}
+            onClick={()=>{ ctx.requestCorrection(corr.h, corr.fieldKey, f.label, f.val, Number(corr.newVal), corr.reason.trim()); setCorr(null); }}>
+            📨 ส่งคำขอให้ Super Admin
+          </Btn>
+        </Modal>);})()}
+    </Card>
+  );
+}
+
+function CorrectionLogPage() {
+  const ctx = useContext(AppCtx);
+  const { corrections } = ctx;
+  const decide = (c, status) => {
+    if (status==='APPROVED') {
+      // ทางเดียวที่ตัวเลข frozen ถูกแก้ได้: เขียนค่าใหม่กลับเข้า record แล้วล็อกต่อทันที
+      ctx.setHistory(h=>h.map(t=>{
+        if (t.id!==c.tripId) return t;
+        const key = c.fieldKey || 'fuel';
+        if (key.startsWith('allowance:')) {
+          const dropId = Number(key.split(':')[1]);
+          return {...t, drops:t.drops.map(d=>d.id===dropId?{...d,allowance:c.newVal}:d)};
+        }
+        return {...t, [key]: c.newVal};
+      }));
+    }
+    ctx.setCorr(corrections.map(x=>x.id===c.id?{...x,status,approvedBy:ctx.whoAmI,approvedAt:Date.now()}:x));
+    ctx.log(ctx.whoAmI, status==='APPROVED'?'อนุมัติปลดล็อกแก้ไข (เขียนค่าใหม่เข้า record แล้ว)':'ปฏิเสธคำขอแก้ไข', c.tripId,
+      `${c.field}: ${money(c.oldVal)} → ${money(c.newVal)} · ผู้ขอ ${c.requesterName}`);
+    ctx.notify(status==='APPROVED'?'✅ อนุมัติแล้ว — แก้ค่าใน record และล็อกกลับทันที':'❌ ปฏิเสธคำขอแล้ว', status==='APPROVED'?'green':'red');
+  };
+  return (
+    <Card title="🔓 Request for Correction — คำขอปลดล็อกแก้ไขข้อมูลการเงิน (Super Admin)">
+      <div className="space-y-3">
+        {corrections.map(c=>(
+          <div key={c.id} className="border border-slate-200 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-slate-400">{c.id}</span>
+                <span className="text-sm font-medium text-slate-700">ทริป {c.tripId}</span>
+                <span className="text-xs text-slate-400">โดย {c.requesterName}</span>
+              </div>
+              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                c.status==='PENDING'?'bg-amber-100 text-amber-700':c.status==='APPROVED'?'bg-emerald-100 text-emerald-700':'bg-red-100 text-red-600'}`}>
+                {c.status==='PENDING'?'รอพิจารณา':c.status==='APPROVED'?'อนุมัติแล้ว':'ปฏิเสธ'}
+              </span>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 text-xs bg-slate-50 rounded-lg p-3">
+              <div><div className="text-slate-400">ฟิลด์</div><div className="font-medium text-slate-700">{c.field}</div></div>
+              <div><div className="text-slate-400">ค่าเดิม</div><div className="font-medium text-red-500 line-through">{money(c.oldVal)}</div></div>
+              <div><div className="text-slate-400">ค่าใหม่ที่ขอ</div><div className="font-medium text-emerald-600">{money(c.newVal)}</div></div>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">เหตุผล: {c.reason}</div>
+            <div className="text-[10px] text-slate-400 mt-1">ยื่นเมื่อ {dateTime(c.at)}</div>
+            {c.approvedBy && c.status!=='PENDING' && (
+              <div className="text-[10px] text-slate-400 mt-0.5">พิจารณาโดย {c.approvedBy} · {dateTime(c.approvedAt)}</div>
+            )}
+            {c.status==='PENDING' && (
+              <div className="flex gap-2 mt-3">
+                <Btn size="sm" color="green" onClick={()=>decide(c,'APPROVED')}>✓ อนุมัติปลดล็อก</Btn>
+                <Btn size="sm" color="red" onClick={()=>decide(c,'REJECTED')}>✕ ปฏิเสธ</Btn>
+              </div>
+            )}
+          </div>
+        ))}
+        {corrections.length===0 && <div className="text-slate-400 text-sm py-6 text-center">ไม่มีคำขอแก้ไข</div>}
+      </div>
+    </Card>
+  );
+}
+
+function ProfileSettingsPage() {
+  const ctx = useContext(AppCtx);
+  const { currentUser } = ctx;
+  const me = ctx.users.find(u=>u.id===currentUser.id) || currentUser;
+  const [name, setName] = useState(me.name);
+  const [phone, setPhone] = useState(me.phone);
+  const [pw, setPw] = useState({old:'', nw:'', confirm:''});
+  const [pwErr, setPwErr] = useState('');
+  const notif = me.notif !== false;
+
+  const saveProfile = () => {
+    ctx.updateUser(me.id, {name, phone});
+    ctx.log(ctx.whoAmI,'แก้ไขโปรไฟล์',me.id,'ชื่อ-สกุล / เบอร์โทร');
+    ctx.notify('💾 บันทึกโปรไฟล์แล้ว','green');
+  };
+  const toggleNotif = () => {
+    ctx.updateUser(me.id, {notif: !notif});
+    ctx.notify(!notif?'🔔 เปิดแจ้งเตือน Push แล้ว':'🔕 ปิดแจ้งเตือน Push แล้ว','slate');
+  };
+  const changePassword = () => {
+    if (pw.old !== (me.password||'1234')) { setPwErr('รหัสผ่านเดิมไม่ถูกต้อง'); return; }
+    if (pw.nw.length < 4) { setPwErr('รหัสผ่านใหม่ต้องยาวอย่างน้อย 4 ตัวอักษร'); return; }
+    if (pw.nw !== pw.confirm) { setPwErr('รหัสผ่านใหม่ทั้งสองช่องไม่ตรงกัน'); return; }
+    ctx.updateUser(me.id, {password: pw.nw});
+    ctx.log(ctx.whoAmI,'เปลี่ยนรหัสผ่าน',me.id,'สำเร็จ'); // ห้ามบันทึกตัวรหัสผ่านลง log
+    setPw({old:'',nw:'',confirm:''}); setPwErr('');
+    ctx.notify('🔑 เปลี่ยนรหัสผ่านแล้ว','green');
+  };
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 max-w-3xl">
+      <Card title="ข้อมูลส่วนตัว">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-14 h-14 rounded-full bg-slate-800 text-white flex items-center justify-center text-xl font-bold">{me.name[0]}</div>
+          <div><div className="font-semibold text-slate-800">{me.name}</div>
+            <div className="text-xs text-slate-400">{ROLES[me.role].icon} {ROLES[me.role].th} · {me.id}</div></div>
+        </div>
+        <Field label="ชื่อ-สกุล"><input className={inputCls} value={name} onChange={e=>setName(e.target.value)}/></Field>
+        <Field label="เบอร์โทร"><input className={inputCls} value={phone} onChange={e=>setPhone(e.target.value)}/></Field>
+        <Btn color="blue" onClick={saveProfile}>บันทึก</Btn>
+      </Card>
+      <Card title="ความปลอดภัย & การแจ้งเตือน">
+        <div className="space-y-3 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-600">แจ้งเตือน Push</span>
+            <button onClick={toggleNotif} className={`w-11 h-6 rounded-full transition relative ${notif?'bg-emerald-500':'bg-slate-300'}`}>
+              <span className="absolute top-0.5 w-5 h-5 bg-white rounded-full transition" style={{left:notif?'22px':'2px'}}></span>
+            </button>
+          </div>
+          <div className="border-t border-slate-100 pt-3">
+            <div className="text-xs font-semibold text-slate-600 mb-2">🔑 เปลี่ยนรหัสผ่าน</div>
+            <Field label="รหัสผ่านเดิม"><input type="password" className={inputCls} value={pw.old} onChange={e=>{setPw({...pw,old:e.target.value});setPwErr('');}}/></Field>
+            <Field label="รหัสผ่านใหม่" hint="อย่างน้อย 4 ตัวอักษร (เดโม: รหัสเริ่มต้นทุกบัญชีคือ 1234)">
+              <input type="password" className={inputCls} value={pw.nw} onChange={e=>{setPw({...pw,nw:e.target.value});setPwErr('');}}/></Field>
+            <Field label="ยืนยันรหัสผ่านใหม่"><input type="password" className={inputCls} value={pw.confirm} onChange={e=>{setPw({...pw,confirm:e.target.value});setPwErr('');}}/></Field>
+            {pwErr && <div className="text-xs text-red-500 mb-2">⚠️ {pwErr}</div>}
+            <Btn size="sm" color="slate" className="w-full" onClick={changePassword} disabled={!pw.old||!pw.nw||!pw.confirm}>เปลี่ยนรหัสผ่าน</Btn>
+          </div>
+          <div className="border-t border-slate-100 pt-3">
+            <div className="text-xs text-slate-500 mb-1">🔐 Single Session</div>
+            <div className="text-xs text-slate-400">บัญชีนี้ล็อกอินได้ 1 อุปกรณ์เท่านั้น — หากมีการเข้าใหม่ เครื่องเดิมจะถูกดีดออกอัตโนมัติ</div>
+            <div className="text-xs text-slate-400 mt-1">อุปกรณ์ปัจจุบัน: Windows · เข้าเมื่อ {clockTime(Date.now())}</div>
+          </div>
+          <Btn size="sm" color="outline" className="w-full" onClick={ctx.logout}>ออกจากระบบทุกอุปกรณ์</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+const PAGES = {
+  '/dashboard': DashboardPage, '/fleet-dispatch': FleetDispatchPage, '/financial-report': FinancialReportPage,
+  '/user-management': UserManagementPage, '/vehicle-inventory': VehicleInventoryPage,
+  '/trip-history': TripHistoryPage, '/correction-log': CorrectionLogPage,
+  '/profile-settings': ProfileSettingsPage,
+};
+const PAGE_TITLE = Object.fromEntries(NAV.map(n=>[n.path, n.th]));
+
+/* ============================================================
+   LOGIN SCREEN
+   ============================================================ */
+function LoginScreen({ users, onLogin, kicked }) {
+  const [ident, setIdent] = useState('');
+  const [err, setErr] = useState('');
+  const quick = users.filter(u=>['D01','SV01','AD01','SA01'].includes(u.id));
+  const doLogin = () => {
+    const u = users.find(x=> x.phone===ident.trim() || x.empId.toLowerCase()===ident.trim().toLowerCase());
+    if (!u) { setErr('ไม่พบเบอร์โทร/รหัสพนักงานนี้'); return; }
+    if (!u.active) { setErr('บัญชีนี้ถูกระงับการใช้งาน'); return; }
+    onLogin(u);
+  };
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-900 to-slate-700 p-4">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-7 fadein">
+        <div className="text-center mb-5">
+          <div className="text-2xl font-bold text-slate-800">🚛 Logi<span className="text-orange-500">ERP</span></div>
+          <div className="text-xs text-slate-400 mt-1">Driver Management System</div>
+        </div>
+        {kicked && <div className="text-xs bg-red-50 text-red-600 rounded-lg p-2.5 mb-3">⚠️ {kicked}</div>}
+        <Field label="เบอร์โทร หรือ รหัสพนักงาน">
+          <input className={inputCls} value={ident} onChange={e=>{setIdent(e.target.value);setErr('');}}
+            placeholder="เช่น 0810000001 หรือ D01" onKeyDown={e=>e.key==='Enter'&&doLogin()} />
+        </Field>
+        {err && <div className="text-xs text-red-500 mb-2">{err}</div>}
+        <Btn color="slate" className="w-full" onClick={doLogin}>เข้าสู่ระบบ</Btn>
+        <div className="mt-5 pt-4 border-t border-slate-100">
+          <div className="text-[10px] text-slate-400 mb-2 text-center">— เข้าสู่ระบบด่วน (เดโม) —</div>
+          <div className="grid grid-cols-2 gap-2">
+            {quick.map(u=>(
+              <button key={u.id} onClick={()=>onLogin(u)} className="text-xs border border-slate-200 rounded-lg py-2 hover:bg-slate-50">
+                {ROLES[u.role].icon} {ROLES[u.role].th}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="text-[10px] text-slate-400 text-center mt-4">🔐 1 บัญชี = 1 Session (กันแชร์รหัส)</div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ROOT APP
+   ============================================================ */
+function App() {
+  const store = useStore();
+  const [currentUser, setCurrentUser] = useState(null);
+  const [route, setRoute] = useState('/dashboard');
+  const [assignTruck, setAssignTruck] = useState(null);
+  const [reviewTruck, setReviewTruck] = useState(null);
+  const [confirm, setConfirm] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [offline, setOffline] = useState(false);
+  const [queue, setQueue] = useState([]); // offline upload queue
+  const seenUploads = useRef(new Set()); // idempotency guard
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [kicked, setKicked] = useState(''); // ข้อความแจ้งถูกดีดออก (single session)
+  const sessionRef = useRef(null); // token ของ session แท็บนี้
+
+  const role = currentUser?.role;
+  const whoAmI = currentUser ? `${currentUser.name} (${currentUser.id})` : '';
+  const notify = (msg, kind='info') => { setToast({msg,kind}); setTimeout(()=>setToast(null),3500); };
+  const patch = (id, fn) => store.setFleet(f=>f.map(t=>t.id===id?fn(t):t));
+
+  // auto-sync queue when back online
+  useEffect(()=>{
+    if(!offline && queue.length>0){
+      const n = queue.length;
+      setQueue([]);
+      notify(`📶 เน็ตกลับมาแล้ว — Auto-sync ${n} รายการในคิวสำเร็จ`,'green');
+      store.log(whoAmI,'Auto-sync Offline Queue','—',`อัปโหลดค้าง ${n} รายการเข้าระบบ`);
+    }
+  }, [offline]);
+
+  const enqueueIfOffline = (label) => {
+    if(offline){ setQueue(q=>[...q,{label,at:Date.now()}]); notify(`📴 ออฟไลน์ — เก็บ "${label}" เข้าคิว จะ sync เมื่อเน็ตกลับมา`,'slate'); return true; }
+    return false;
+  };
+
+  /* ---- single session: login แท็บ/เครื่องอื่นด้วยบัญชีเดียวกัน → แท็บนี้ถูกดีดออก ----
+     ตรวจผ่าน storage event (ยิงเฉพาะแท็บอื่น) เทียบ sessionId ใน localStorage กับ token ของแท็บนี้
+     ห้ามเขียน store ใดๆ ตอนถูกดีด — ไม่งั้น sessionId เก่าจะถูก persist ทับแล้วดีดกันไปมา */
+  useEffect(()=>{
+    const onStorage = (e) => {
+      if(e.key!==LS_KEY || !currentUser) return;
+      try {
+        const st = JSON.parse(e.newValue);
+        const me = st?.users?.find(u=>u.id===currentUser.id);
+        if(me && me.sessionId && me.sessionId!==sessionRef.current){
+          setCurrentUser(null); setRoute('/dashboard');
+          setKicked('บัญชีนี้ถูกเข้าใช้งานจากอุปกรณ์อื่น — session เดิมถูกดีดออกอัตโนมัติ (1 บัญชี = 1 Session)');
+        }
+      } catch(err){}
+    };
+    window.addEventListener('storage', onStorage);
+    return ()=>window.removeEventListener('storage', onStorage);
+  }, [currentUser]);
+
+  const handleLogin = (u) => {
+    const token = 'S-'+Math.random().toString(36).slice(2,10);
+    sessionRef.current = token;
+    const hadSession = !!u.sessionId;
+    store.setUsers(us=>us.map(x=>x.id===u.id?{...x,sessionId:token}:x)); // ทับ session เก่า = ดีดเครื่องเดิมออก
+    setCurrentUser(u); setKicked('');
+    store.log(`${u.name} (${u.id})`,'เข้าสู่ระบบ',u.id,`Single session${hadSession?' — ดีด session เก่าออก':''} · ${ROLES[u.role].th}`);
+  };
+
+  /* อัปเดตข้อมูล user (โปรไฟล์/รหัสผ่าน/notif) — sync currentUser ของแท็บนี้ด้วย */
+  const updateUser = (id, patchObj) => {
+    store.setUsers(us=>us.map(x=>x.id===id?{...x,...patchObj}:x));
+    if(currentUser?.id===id) setCurrentUser(c=>({...c,...patchObj}));
+  };
+
+  /* ---- trip actions ---- */
+  const assign = (id, plate, drops, distanceKm) => {
+    patch(id, old=>({...old, plate, status:'ORANGE', assignedAt:Date.now(), distanceKm,
+      drops:drops.map((d,i)=>({id:i+1,name:d.name,allowance:d.allowance,delivered:false,photo:false,tarp:false,gps:null,fuelReceipt:null,tollReceipt:null}))}));
+    const drv = store.users.find(u=>u.id===store.fleet.find(t=>t.id===id).driverId);
+    store.log(whoAmI,'จ่ายงาน',id,`ผูกทะเบียน ${plate}, สร้าง ${drops.length} จุดส่ง`);
+    notify(`🔔 Push → ${drv?.name}: งานใหม่ (สีส้ม) เตรียมคลุมผ้าใบ`,'orange');
+    setAssignTruck(null);
+  };
+  const finishLoading = (id) => {
+    const gps='13.7367, 100.5231';
+    patch(id, t=>({...t, status:'GREEN', finishedLoadingAt:Date.now(), tarpaulinDeadline:Date.now()+30e3, tarpEscalated:false}));
+    store.log(whoAmI,'ขนของขึ้นเสร็จ',id,`Geo-stamp ต้นทาง GPS: ${gps}`);
+    notify('📍 บันทึก GPS ต้นทาง · 🔔 เตือนส่งรูปผ้าใบ (สีเขียว)','green');
+  };
+  const uploadTarp = (id, dropId) => {
+    const key = `tarp-${id}-${dropId}`;
+    if(seenUploads.current.has(key)){ notify('⛔ Idempotency: รูปผ้าใบจุดนี้ส่งไปแล้ว','slate'); return; }
+    if(enqueueIfOffline(`รูปผ้าใบจุด ${dropId}`)) return;
+    seenUploads.current.add(key);
+    // อัปผ้าใบแล้ว: รีสตาร์ทตัวจับเวลาไว้รอจุดถัดไป + ล้างธง escalation
+    patch(id, t=>({...t, tarpaulinDeadline:Date.now()+30e3, tarpEscalated:false,
+      drops:t.drops.map(d=>d.id===dropId?{...d,tarp:true}:d)}));
+    store.log(whoAmI,'อัปโหลดรูปผ้าใบ',`${id}/จุด${dropId}`,'Idempotency guard: OK');
+    notify(`🖼️ อัปโหลดรูปผ้าใบจุด ${dropId} สำเร็จ`,'blue');
+  };
+  /* คนขับอัปบิลรายจุด → mock OCR อ่านยอด/วันที่เป็น Draft — รอ Supervisor ยืนยันเท่านั้น (ห้าม auto-commit) */
+  const uploadReceipt = (id, dropId, kind) => {
+    const key = `rcpt-${kind}-${id}-${dropId}`;
+    const field = kind==='fuel'?'fuelReceipt':'tollReceipt';
+    const label = kind==='fuel'?'บิลน้ำมัน':'บิลทางหลวง';
+    const drop = store.fleet.find(x=>x.id===id)?.drops.find(d=>d.id===dropId);
+    if(seenUploads.current.has(key) || drop?.[field]){ notify(`⛔ Idempotency: ${label}จุดนี้ส่งไปแล้ว`,'slate'); return; }
+    if(enqueueIfOffline(`${label}จุด ${dropId}`)) return;
+    seenUploads.current.add(key);
+    const amount = kind==='fuel' ? 1000+Math.floor(Math.random()*1500) : 100+Math.floor(Math.random()*300);
+    const date = dateOnly(Date.now());
+    patch(id, t=>({...t, drops:t.drops.map(d=>d.id===dropId?{...d,[field]:{amount,date,approved:false}}:d)}));
+    store.log(whoAmI,`อัปโหลด${label}`,`${id}/จุด${dropId}`,`OCR Draft: ${money(amount)} (${date}) — รอ Supervisor ยืนยัน`);
+    notify(`🤖 OCR อ่าน${label}จุด ${dropId}: ${money(amount)} (Draft รอยืนยัน)`,'blue');
+  };
+  /* Supervisor ยืนยัน/แก้ยอด Draft — ค่าถึงจะถูกนับเข้า payout */
+  const approveReceipt = (id, dropId, kind, amount) => {
+    const field = kind==='fuel'?'fuelReceipt':'tollReceipt';
+    const label = kind==='fuel'?'ค่าน้ำมัน':'ค่าทางหลวง';
+    const r = store.fleet.find(x=>x.id===id)?.drops.find(d=>d.id===dropId)?.[field];
+    if(!r || r.approved) return; // dedupe: อนุมัติซ้ำไม่ได้
+    const finalAmt = amount ?? r.amount;
+    const corrected = finalAmt !== r.amount;
+    patch(id, t=>({...t, drops:t.drops.map(d=>d.id===dropId?{...d,[field]:{...d[field],amount:finalAmt,approved:true}}:d)}));
+    store.log(whoAmI, corrected?'แก้ยอด OCR แล้วอนุมัติ':'OCR อนุมัติ Draft', `${id}/จุด${dropId}`,
+      `${label} = ${money(finalAmt)}${corrected?` (แก้จาก ${money(r.amount)})`:''}`);
+  };
+  /* Escalation ผ้าใบ: หมดเวลา → log + แจ้ง Supervisor + ปักธงบนแดชบอร์ด (ยิงครั้งเดียวต่อรอบ) */
+  const escalateTarp = (id) => {
+    const t = store.fleet.find(x=>x.id===id);
+    if(!t || t.tarpEscalated || t.status!=='GREEN') return;
+    patch(id, x=>({...x, tarpEscalated:true}));
+    store.log('ระบบ','Escalation: เกินเวลาส่งรูปผ้าใบ',id,'แจ้งเตือน Supervisor อัตโนมัติ + ปักธงบนแดชบอร์ด');
+    notify('🚩 Escalation: เกินเวลาผ้าใบ — แจ้งเตือน Supervisor แล้ว','red');
+  };
+  // Watchdog กลาง: escalation ต้องยิงแม้ไม่มีการ์ดรถ (TarpaulinTimer) render อยู่ เช่นตอนดู list หน้าจัดรถ
+  useEffect(()=>{
+    const i = setInterval(()=>{
+      store.fleet.forEach(t=>{
+        if(t.status==='GREEN' && !t.tarpEscalated && t.tarpaulinDeadline && Date.now()>t.tarpaulinDeadline){
+          const cur = t.drops.find(d=>!(d.delivered&&d.photo));
+          if(cur && !cur.tarp) escalateTarp(t.id);
+        }
+      });
+    }, 2000);
+    return ()=>clearInterval(i);
+  }, [store.fleet]);
+  /* ส่งของ: จุดส่งเรียงตามลำดับ — ข้ามลำดับได้แต่ต้องยืนยันก่อน (เตือน ไม่บล็อก) */
+  const uploadProof = (id, dropId) => {
+    const t = store.fleet.find(x=>x.id===id);
+    const skipped = (t?.drops||[]).filter(d=>d.id<dropId && !(d.delivered&&d.photo));
+    if(skipped.length){
+      setConfirm({ title:'⚠️ ส่งข้ามลำดับจุดส่ง',
+        body:`จุดที่ ${skipped.map(d=>d.id).join(', ')} ยังไม่ส่งของ ปกติต้องส่งเรียงตามลำดับ — ยืนยันส่งจุดที่ ${dropId} ก่อนหรือไม่?`,
+        okText:'ยืนยันส่งข้ามลำดับ', onOk:()=>{ setConfirm(null); doUploadProof(id, dropId, true); } });
+      return;
+    }
+    doUploadProof(id, dropId, false);
+  };
+  const doUploadProof = (id, dropId, skipOrder) => {
+    const key = `proof-${id}-${dropId}`;
+    if(seenUploads.current.has(key)){ notify('⛔ Idempotency: รูปจุดนี้ส่งไปแล้ว','slate'); return; }
+    if(enqueueIfOffline(`รูปส่งจุด ${dropId}`)) return;
+    seenUploads.current.add(key);
+    const gps = `13.${6+dropId}${dropId}84, 100.6${dropId}00`;
+    patch(id, t=>({...t, drops:t.drops.map(d=>d.id===dropId?{...d,delivered:true,photo:true,gps,deliveredAt:Date.now()}:d)}));
+    store.log(whoAmI,'อัปโหลดรูปส่งสำเร็จ',`${id}/จุด${dropId}`,`Geo-stamp ปลายทาง GPS: ${gps}${skipOrder?' · ส่งข้ามลำดับ (ยืนยันแล้ว)':''}`);
+    notify(`📍 จุดส่ง ${dropId}: บันทึกรูป + GPS ปลายทาง`,'green');
+  };
+  const saveFinance = (id, data) => {
+    patch(id, t=>({...t, ...data}));
+    store.log(whoAmI,'คีย์ข้อมูลการเงิน',id,`โบนัส ${money(data.bonus)}${data.penalty>0?`, หัก ${money(data.penalty)} จากเบี้ยเลี้ยงทริป (${data.penaltyReason})`:''}`);
+    if(data.penalty>0){
+      store.log('ระบบ','แจ้งเตือน Admin (หักเงิน)',id,`หัก ${money(data.penalty)} จากเบี้ยเลี้ยงทริป — เหตุผล: ${data.penaltyReason}`);
+      notify(`🔔 แจ้ง Admin: หักเงิน ${money(data.penalty)} (${data.penaltyReason})`,'red');
+    } else notify('💾 บันทึกข้อมูลการเงินแล้ว','green');
+  };
+  const closeTrip = (t) => {
+    const allDone = t.drops.every(d=>d.delivered && d.photo);
+    if(!allDone){
+      setConfirm({ title:'⚠️ ยังส่งของไม่ครบทุกจุด',
+        body:`รถ ${t.plate} ยังอัปโหลดรูปส่งไม่ครบทุกจุดย่อย การกดปิดงานตอนนี้เป็นการข้ามขั้นตอน (Manual Override) — ยืนยันหรือไม่?`,
+        okText:'ยืนยัน Override', onOk:()=>doClose(t,true) });
+      return;
+    }
+    setConfirm({ title:'🔒 ยืนยันปิดงาน', body:`ปิดงาน ${t.id} และล็อกยอดเงิน ${money(computePayout(t).total)} ถาวร (Freeze on Close) — ยืนยันหรือไม่?`,
+      okText:'ปิดงาน', onOk:()=>doClose(t,false) });
+  };
+  const doClose = (t, override) => {
+    const payout = computePayout(t);
+    const drv = store.users.find(u=>u.id===t.driverId);
+    // move to history (frozen) — freeze ยอดรวมน้ำมัน/ทางหลวง + เก็บหลักฐานรายจุดตามจริง
+    const rec = { id:'H-'+Math.floor(Math.random()*900+100), driverId:t.driverId, driver:drv?.name, plate:t.plate,
+      closedAt:Date.now(), distanceKm:t.distanceKm,
+      fuel:payout.fuel, toll:payout.toll, bonus:t.bonus, penalty:t.penalty, penaltyReason:t.penaltyReason,
+      drops:t.drops.map(d=>({id:d.id, name:d.name, allowance:d.allowance, photo:!!d.photo, tarp:!!d.tarp, gps:d.gps||null,
+        fuel:d.fuelReceipt?.approved ? d.fuelReceipt.amount : 0, toll:d.tollReceipt?.approved ? d.tollReceipt.amount : 0})),
+      frozen:true, override };
+    store.setHistory(h=>[rec, ...h]);
+    // Scheduled Backup: สำรองข้อมูลการเงินอัตโนมัติทุกครั้งที่ปิดทริป
+    store.snapshot(`ปิดทริป ${t.id} → ${rec.id}`, [rec, ...store.history], store.corrections);
+    // reset truck to white
+    patch(t.id, old=>({...old, status:'WHITE', plate:null, drops:[], bonus:0, penalty:0, penaltyReason:'',
+      tarpaulinDeadline:null, tarpEscalated:false, distanceKm:0, assignedAt:null, finishedLoadingAt:null}));
+    // clear idempotency keys for this trip
+    [...seenUploads.current].forEach(k=>{ if(k.includes(t.id)) seenUploads.current.delete(k); });
+    store.log(whoAmI, override?'ปิดงาน (Override ข้ามขั้นตอน)':'ปิดงาน', t.id, `Freeze on Close: ล็อกยอด ${money(payout.total)} ถาวร`);
+    notify(`🔒 ปิดงาน ${t.id} → สีขาว · ยอดเงินล็อกถาวร · สำรองข้อมูลแล้ว`,'slate');
+    setConfirm(null);
+  };
+  /* ขอปลดล็อกแก้ตัวเลขทริปที่ปิดแล้ว — ทางเดียวที่แตะเงิน frozen ได้ ต้องผ่าน Super Admin */
+  const requestCorrection = (h, fieldKey, fieldLabel, oldVal, newVal, reason) => {
+    const id = 'C-'+String(store.corrections.length+1).padStart(2,'0');
+    store.setCorr(c=>[{ id, tripId:h.id, requestedBy:currentUser.id, requesterName:currentUser.name,
+      fieldKey, field:fieldLabel, oldVal, newVal, reason, status:'PENDING', at:Date.now(), approvedBy:null, approvedAt:null }, ...c]);
+    store.log(whoAmI,'ยื่นคำขอแก้ไข (Correction)',h.id,`${fieldLabel}: ${money(oldVal)} → ${money(newVal)} — ${reason}`);
+    notify('📨 ส่งคำขอปลดล็อกให้ Super Admin แล้ว','blue');
+  };
+  const logout = () => { setCurrentUser(null); setRoute('/dashboard'); };
+
+  if(!currentUser) return <LoginScreen users={store.users} onLogin={handleLogin} kicked={kicked} />;
+
+  const ctx = { ...store, role, currentUser, whoAmI, notify, updateUser, go:setRoute,
+    openAssign:setAssignTruck, openReview:setReviewTruck, assign, finishLoading,
+    uploadTarp, uploadReceipt, approveReceipt, uploadProof, escalateTarp,
+    saveFinance, closeTrip, requestCorrection, logout };
+  const visibleNav = NAV.filter(n=>n.roles.includes(role));
+  const PageComp = PAGES[route] || DashboardPage;
+
+  return (
+    <AppCtx.Provider value={ctx}>
+      <div className="min-h-screen flex bg-slate-100">
+        {/* SIDEBAR */}
+        <aside className={`fixed md:static z-40 inset-y-0 left-0 w-60 bg-slate-900 text-slate-300 flex flex-col transition-transform ${sidebarOpen?'translate-x-0':'-translate-x-full md:translate-x-0'}`}>
+          <div className="px-5 py-5 border-b border-slate-800">
+            <div className="font-bold text-white text-lg">🚛 Logi<span className="text-orange-400">ERP</span></div>
+            <div className="text-[10px] text-slate-500 mt-0.5">Driver Management System</div>
+          </div>
+          <nav className="flex-1 py-3 overflow-y-auto">
+            {visibleNav.map(n=>(
+              <button key={n.path} onClick={()=>{setRoute(n.path);setSidebarOpen(false);}}
+                className={`w-full flex items-center gap-3 px-5 py-2.5 text-sm ${n.path===route?'bg-slate-800 text-white border-l-2 border-orange-400':'hover:bg-slate-800/50'}`}>
+                <span>{n.icon}</span><span>{n.th}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="px-5 py-3 border-t border-slate-800 text-[10px] text-slate-500">
+            🔐 Single Session · 1 อุปกรณ์/บัญชี<br/>เข้าระบบ: {clockTime(Date.now())}
+            <button onClick={store.resetDemo} className="block mt-2 text-slate-400 hover:text-white underline">↺ รีเซ็ตข้อมูลเดโม</button>
+          </div>
+        </aside>
+        {sidebarOpen && <div className="fixed inset-0 bg-black/30 z-30 md:hidden" onClick={()=>setSidebarOpen(false)}></div>}
+
+        {/* MAIN */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <header className="bg-white border-b border-slate-200 px-4 md:px-6 py-3 flex items-center justify-between gap-3 sticky top-0 z-20">
+            <div className="flex items-center gap-3 min-w-0">
+              <button className="md:hidden text-slate-500 text-xl" onClick={()=>setSidebarOpen(true)}>☰</button>
+              <div className="min-w-0">
+                <h1 className="font-bold text-slate-800 text-lg truncate">{PAGE_TITLE[route]}</h1>
+                <div className="text-xs text-slate-400 truncate">{route}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 md:gap-3">
+              {/* offline toggle */}
+              <button onClick={()=>setOffline(!offline)}
+                className={`text-xs px-2.5 py-1.5 rounded-lg font-medium ${offline?'bg-red-100 text-red-600':'bg-emerald-100 text-emerald-700'}`}>
+                {offline?`📴 ออฟไลน์${queue.length?` (${queue.length})`:''}`:'📶 ออนไลน์'}
+              </button>
+              <div className="hidden sm:block text-right">
+                <div className="text-sm font-medium text-slate-700">{currentUser.name}</div>
+                <div className="text-[10px] text-slate-400">{ROLES[role].icon} {ROLES[role].th}</div>
+              </div>
+              <button onClick={logout} className="w-9 h-9 rounded-full bg-slate-800 text-white text-sm font-bold" title="ออกจากระบบ">{currentUser.name[0]}</button>
+            </div>
+          </header>
+
+          <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">
+            <PageComp />
+          </main>
+
+          {/* MOBILE BOTTOM NAV */}
+          <nav className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 flex justify-around py-1.5 z-20">
+            {visibleNav.slice(0,5).map(n=>(
+              <button key={n.path} onClick={()=>setRoute(n.path)}
+                className={`flex flex-col items-center text-[10px] px-2 py-1 ${n.path===route?'text-orange-500':'text-slate-400'}`}>
+                <span className="text-lg">{n.icon}</span>{n.th}
+              </button>
+            ))}
+          </nav>
+        </div>
+
+        {/* MODALS */}
+        {assignTruck && <AssignModal truck={assignTruck} onClose={()=>setAssignTruck(null)} />}
+        {reviewTruck && <ReviewModal truck={store.fleet.find(t=>t.id===reviewTruck.id)} onClose={()=>setReviewTruck(null)} />}
+        {confirm && (
+          <Modal title={confirm.title} onClose={()=>setConfirm(null)}>
+            <p className="text-sm text-slate-600 mb-4">{confirm.body}</p>
+            <div className="flex gap-2">
+              <Btn color="outline" className="flex-1" onClick={()=>setConfirm(null)}>ยกเลิก</Btn>
+              <Btn color={confirm.okText?.includes('Override')?'red':'slate'} className="flex-1" onClick={confirm.onOk}>{confirm.okText||'ยืนยัน'}</Btn>
+            </div>
+          </Modal>
+        )}
+        {toast && (
+          <div className="fixed bottom-20 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-[90vw] text-center fadein">
+            {toast.msg}
+          </div>
+        )}
+      </div>
+    </AppCtx.Provider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+  // Compile the JSX source with the CLASSIC runtime (uses global React.createElement),
+  // avoiding the automatic runtime's `import ... from "react/jsx-runtime"` which is
+  // illegal inside a plain <script> and would silently blank the page.
+  (function () {
+    function boot() {
+      try {
+        var src = document.getElementById('app-src').textContent;
+        var out = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
+        var s = document.createElement('script');
+        s.textContent = out;
+        document.body.appendChild(s);
+      } catch (e) {
+        document.getElementById('root').innerHTML =
+          '<pre style="padding:16px;color:#b91c1c;white-space:pre-wrap;font-family:monospace">' +
+          'เกิดข้อผิดพลาดในการโหลด: ' + (e && e.message ? e.message : e) + '</pre>';
+        console.error(e);
+      }
+    }
+    if (window.Babel) boot();
+    else window.addEventListener('load', boot);
+  })();
+</script>
+</body>
+</html>
