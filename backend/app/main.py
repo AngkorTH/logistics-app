@@ -17,6 +17,7 @@ from app.routers import (
     finance,
     incidents,
     inspections,
+    maintenance,
     notifications,
     penalties,
     trips,
@@ -56,6 +57,7 @@ app.include_router(notifications.router)
 app.include_router(inspections.router)
 app.include_router(advances.router)
 app.include_router(incidents.router)
+app.include_router(maintenance.router)
 
 
 @app.get("/health", tags=["health"])

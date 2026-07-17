@@ -10,6 +10,7 @@ from app.models.enums import (
     AdvanceStatus,
     IncidentKind,
     IncidentStatus,
+    VehicleStatus,
 )
 from app.models.user import User
 from app.models.vehicle import Vehicle
@@ -22,6 +23,7 @@ from app.models.notification import Notification
 from app.models.inspection import Inspection
 from app.models.advance import Advance
 from app.models.incident import Incident
+from app.models.maintenance import MaintenanceReport
 
 __all__ = [
     "Role",
@@ -34,6 +36,7 @@ __all__ = [
     "AdvanceStatus",
     "IncidentKind",
     "IncidentStatus",
+    "VehicleStatus",
     "User",
     "Vehicle",
     "Trip",
@@ -47,4 +50,5 @@ __all__ = [
     "Inspection",
     "Advance",
     "Incident",
+    "MaintenanceReport",
 ]

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user, get_trip, require_supervisor
 from app.models import Drop, Role, Trip, User, Vehicle
+from app.models.enums import VehicleStatus
 from app.schemas.auth import UserOut
 from app.schemas.ops import (
     AssignRequest,
@@ -153,6 +154,12 @@ def assign(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "คนขับคนนี้ยังไม่ถูกผูกรถในคลังรถยนต์ — ไปผูกรถที่หน้า 'คลังรถยนต์' ก่อนจ่ายงาน",
+        )
+    # รถกำลังซ่อม (คนขับแจ้งเหตุรถมีปัญหา) → ล็อกจ่ายงาน จนกว่าจะปิดเหตุ
+    if vehicle.status is VehicleStatus.MAINTENANCE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"รถ {vehicle.plate} กำลังซ่อม (คนขับแจ้งเหตุรถมีปัญหา) — จ่ายงานไม่ได้จนกว่าจะปิดเหตุ",
         )
     try:
         assign_trip(db, trip, vehicle.plate, actor, difficulty=body.difficulty, force=body.force)

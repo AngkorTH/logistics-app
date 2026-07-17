@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useVehiclesAdmin, useCreateVehicle, useAssignVehicle, useDrivers } from '../api/hooks'
 import { errMsg } from '../api/client'
 import { Btn, Field, Modal, inputCls } from '../components/ui'
+import MaintenanceReportsPanel from '../components/MaintenanceReportsPanel'
 
 function AddModal({ onClose, onDone }) {
   const create = useCreateVehicle()
@@ -52,12 +53,24 @@ export default function VehiclesPage() {
       <div className="flex justify-end">
         <Btn color="blue" onClick={() => setAdd(true)}>＋ เพิ่มรถ</Btn>
       </div>
+
+      {/* รถที่คนขับแจ้งเหตุ/กำลังซ่อม + ปุ่มปิดเหตุ (ปลดล็อกรถ) */}
+      <MaintenanceReportsPanel />
+
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {vehicles.map((v) => (
-          <div key={v.id} className="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4 space-y-2">
+          <div key={v.id} className={`bg-white rounded-xl ring-1 shadow-sm p-4 space-y-2 ${
+            v.status === 'MAINTENANCE' ? 'ring-amber-300' : 'ring-slate-200'}`}>
             <div className="flex items-center justify-between">
               <span className="font-bold text-slate-800">🚛 {v.plate}</span>
               <span className="text-xs text-slate-400">{v.model || '—'}</span>
+            </div>
+            <div>
+              {v.status === 'MAINTENANCE' ? (
+                <span className="text-[11px] font-bold text-amber-700 bg-amber-100 rounded-full px-2 py-0.5">🔧 กำลังซ่อม</span>
+              ) : (
+                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 rounded-full px-2 py-0.5">✅ พร้อมใช้งาน</span>
+              )}
             </div>
             <div>
               <label className="block text-[10px] text-slate-400 mb-1">คนขับประจำรถ</label>

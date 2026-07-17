@@ -11,6 +11,7 @@ import { Btn, Stars, STATUS, DIFFICULTY, inputCls } from '../components/ui'
 import AssignModal from '../components/AssignModal'
 import TripDetailModal from '../components/TripDetailModal'
 import ApprovalCenter, { pendingReceipts } from '../components/ApprovalCenter'
+import MaintenanceReportsPanel from '../components/MaintenanceReportsPanel'
 
 const GROUPS = [
   { key: 'white',  st: 'WHITE'  },
@@ -97,6 +98,9 @@ export default function DispatchPage() {
       <p className="text-xs text-slate-400">
         กลุ่ม “รองาน” เรียงลำดับให้แล้ว: วิ่งงานหนักมาก่อน → กดขึ้นของไวก่อน → ดาวมากก่อน · คลิกชื่อคนขับที่ติดงานเพื่อดูรายละเอียดทริป
       </p>
+
+      {/* รถที่คนขับแจ้งเหตุ/กำลังซ่อม — ล็อกจ่ายงาน จนกว่าจะปิดเหตุ */}
+      <MaintenanceReportsPanel />
 
       {showApproval && (
         <div className="bg-white rounded-xl ring-1 ring-slate-200 shadow-sm p-4">

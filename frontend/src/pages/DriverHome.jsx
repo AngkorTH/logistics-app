@@ -5,11 +5,11 @@
 import { useState } from 'react'
 import {
   useTrips, useFinishLoading, useUploadReceipt, useUploadTarp, useRecordDelivery,
-  useInspection, useSubmitInspection, useAdvances, useRequestAdvance, useSos,
+  useInspection, useSubmitInspection, useAdvances, useRequestAdvance, useSos, useReportIssue,
 } from '../api/hooks'
 import { errMsg } from '../api/client'
 import { ImageLightbox, PhotoThumb, STATUS, StatusPill, money } from '../components/ui'
-import { AdvanceSheet, InspectionCard, PhotoConfirmSheet, SosSheet } from '../components/DriverSheets'
+import { AdvanceSheet, InspectionCard, PhotoConfirmSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
 import { pickImage } from '../utils/image'
 import { useOffline } from '../offline/useOffline'
 
@@ -38,11 +38,12 @@ export default function DriverHome() {
   const submitInspection = useSubmitInspection()
   const requestAdvance = useRequestAdvance()
   const sos = useSos()
+  const reportIssue = useReportIssue()
   const { data: advances } = useAdvances()
 
   const [toast, setToast] = useState(null)
   const [busyKey, setBusyKey] = useState(null)   // กันกดปุ่มซ้ำระหว่างรอ API
-  const [sheet, setSheet] = useState(null)        // 'sos' | 'advance' | null
+  const [sheet, setSheet] = useState(null)        // 'sos' | 'advance' | 'issue' | null
   const [reinspect, setReinspect] = useState(false) // ขอเปิดฟอร์มตรวจใหม่หลัง REJECTED
   const [photoDraft, setPhotoDraft] = useState(null)  // Phase 4: รูปที่ถ่ายรอยืนยันก่อนส่ง
   const [zoom, setZoom] = useState(null)              // Phase 4: ขยายดูรูปเต็มจอ
@@ -108,6 +109,14 @@ export default function DriverHome() {
               setSheet(null)
             }, '🚨 แจ้งเหตุแล้ว! ทริปถูกพักชั่วคราว — คนคุมงานได้รับแจ้งเตือนทันที')} />
       )}
+      {sheet === 'issue' && !active && (
+        <ReportIssueSheet busy={busyKey === 'issue'} onClose={() => setSheet(null)}
+          onSubmit={({ message, photo_b64 }) =>
+            run('issue', async () => {
+              await reportIssue.mutateAsync({ message, photo_b64 })
+              setSheet(null)
+            }, '🔧 แจ้งเหตุแล้ว! รถถูกตั้งเป็น "กำลังซ่อม" — คนคุมงานได้รับแจ้งเตือน')} />
+      )}
       <PhotoConfirmSheet draft={photoDraft} busy={busyKey === 'photo'} onClose={() => setPhotoDraft(null)} />
       <ImageLightbox image={zoom} onClose={() => setZoom(null)} />
       <ToastView toast={toast} />
@@ -124,17 +133,23 @@ export default function DriverHome() {
     })
   }
 
-  // ปุ่มเบิกเงิน (ทุกสถานะ) + ปุ่ม SOS (เฉพาะตอนมีทริปวิ่ง)
+  // ปุ่มเบิกเงิน (ทุกสถานะ) + SOS (เฉพาะตอนมีทริปวิ่ง) + แจ้งเหตุรถมีปัญหา (เฉพาะตอนรองาน/ขาว)
   const actionRow = (
-    <div className={`grid gap-2 ${active ? 'grid-cols-2' : 'grid-cols-1'}`}>
+    <div className="grid gap-2 grid-cols-2">
       <button onClick={() => setSheet('advance')}
         className="py-3.5 rounded-xl bg-white ring-1 ring-blue-300 text-blue-600 text-base font-bold active:scale-[0.98] transition">
         💵 ขอเบิกเงินล่วงหน้า
       </button>
-      {active && (
+      {active ? (
         <button onClick={() => setSheet('sos')}
           className="py-3.5 rounded-xl bg-red-50 ring-1 ring-red-300 text-red-600 text-base font-bold active:scale-[0.98] transition">
           🆘 แจ้งเหตุฉุกเฉิน
+        </button>
+      ) : (
+        // สถานะรองาน (ขาว): แจ้งรถมีปัญหา → ตั้งรถเป็น "กำลังซ่อม"
+        <button onClick={() => setSheet('issue')}
+          className="py-3.5 rounded-xl bg-amber-50 ring-1 ring-amber-300 text-amber-700 text-base font-bold active:scale-[0.98] transition">
+          🔧 แจ้งเหตุ/ตรวจพบปัญหา
         </button>
       )}
     </div>

@@ -114,6 +114,35 @@ export const useSos = () =>
   useTripMutation(({ tripId, kind, message, lat, lng, photo_b64 }) =>
     sendOrQueue({ url: `/trips/${tripId}/sos`, body: { kind, message, lat, lng, photo_b64 }, label: '🆘 แจ้งเหตุฉุกเฉิน' }))
 
+// ---------- Maintenance Report (คนขับแจ้งเหตุ/รถมีปัญหา ตอนรองาน) ----------
+// ส่งผ่าน sendOrQueue เพื่อรองรับออฟไลน์เหมือนปุ่มคนขับอื่นๆ
+export const useReportIssue = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ message, photo_b64 }) =>
+      sendOrQueue({ url: '/maintenance/report', body: { message, photo_b64 }, label: '🔧 แจ้งเหตุรถมีปัญหา' }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['maintenance'] }); qc.invalidateQueries({ queryKey: ['vehicles-admin'] }) },
+  })
+}
+// ฝั่งคุมงาน/แอดมิน: รายการแจ้งเหตุ + ปิดเหตุ (ปลดล็อกรถ)
+export const useMaintenanceReports = (status) =>
+  useQuery({
+    queryKey: ['maintenance', status],
+    queryFn: () =>
+      api.get('/maintenance', { params: status ? { status_filter: status } : undefined }).then((r) => r.data),
+  })
+export const useResolveMaintenance = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, note }) => api.post(`/maintenance/${id}/resolve`, { note }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['maintenance'] })
+      qc.invalidateQueries({ queryKey: ['vehicles-admin'] })
+      qc.invalidateQueries({ queryKey: ['dispatch'] })
+    },
+  })
+}
+
 // ---------- ฝั่งคุมงาน/แอดมิน (Phase 3C) ----------
 // แท็บ "รอตรวจ" (ข้อ 2.2): ทริปที่คนขับส่งงานจบ รอล็อกการเงิน — backend เรียงเก่า→ใหม่ให้แล้ว
 export const usePendingReview = () =>

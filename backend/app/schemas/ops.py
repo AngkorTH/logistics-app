@@ -15,6 +15,7 @@ from app.models.enums import (
     ReceiptKind,
     TripDifficulty,
     TripStatus,
+    VehicleStatus,
 )
 
 
@@ -97,6 +98,7 @@ class VehicleOut(BaseModel):
     plate: str
     model: str
     driver_id: int | None
+    status: VehicleStatus = VehicleStatus.AVAILABLE   # AVAILABLE / MAINTENANCE
 
 
 # --------------------------- State machine ---------------------------
@@ -208,6 +210,32 @@ class IncidentOut(BaseModel):
     message: str
     gps: str | None
     photo: str | None   # URL รูปหน้างาน (Phase 4)
+    status: IncidentStatus
+    resolver_name: str
+    created_at: datetime
+
+
+# --------------------------- Maintenance Report (แจ้งเหตุ/รถมีปัญหา ตอนรองาน) ---------------------------
+class MaintenanceReportRequest(BaseModel):
+    """คนขับแจ้งเหตุรถมีปัญหา — บังคับรายละเอียด + รูปหลักฐาน"""
+    message: str = Field(..., min_length=1)        # รายละเอียดปัญหา (บังคับ)
+    photo_b64: str = Field(..., min_length=1)      # รูปหลักฐาน Base64 (บังคับ)
+    captured_at: datetime | None = None            # เวลากดแจ้งจริงตอนออฟไลน์
+
+
+class MaintenanceResolveRequest(BaseModel):
+    note: str = ""
+
+
+class MaintenanceReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    code: str
+    driver_id: int
+    vehicle_id: int | None
+    plate: str
+    message: str
+    photo: str | None
     status: IncidentStatus
     resolver_name: str
     created_at: datetime

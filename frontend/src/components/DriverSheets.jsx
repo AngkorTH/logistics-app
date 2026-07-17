@@ -135,6 +135,46 @@ export function SosSheet({ onClose, onSubmit, busy }) {
   )
 }
 
+/* ---------- แจ้งเหตุ/รถมีปัญหา ตอนรองาน (Report Issue) ---------- */
+// บังคับกรอก 2 อย่าง: รายละเอียดปัญหา + รูปหลักฐาน · ส่งแล้วรถถูกตั้งเป็น "กำลังซ่อม"
+export function ReportIssueSheet({ onClose, onSubmit, busy }) {
+  const [message, setMessage] = useState('')
+  const [photo, setPhoto] = useState(null) // dataURL รูปหลักฐาน (บังคับ)
+  const valid = message.trim().length > 0 && !!photo
+
+  return (
+    <BottomSheet title="🔧 แจ้งเหตุ / ตรวจพบปัญหา" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-xl bg-amber-50 ring-1 ring-amber-200 text-amber-700 text-sm px-3 py-2.5">
+          ⚠️ เมื่อส่งแล้ว รถของคุณจะถูกตั้งเป็น <b>"กำลังซ่อม"</b> อัตโนมัติ —
+          คนคุมงานจะจ่ายงานให้ไม่ได้จนกว่าจะปิดเหตุ
+        </div>
+        <div>
+          <label className="block text-sm font-semibold text-slate-600 mb-1">รายละเอียดปัญหา (บังคับ)</label>
+          <textarea value={message} onChange={(e) => setMessage(e.target.value)}
+            placeholder="เช่น ยางแบนล้อหน้าซ้าย / เครื่องสตาร์ทไม่ติด / น้ำมันเครื่องรั่ว…" rows={3}
+            className="w-full border border-slate-300 rounded-xl px-3 py-2.5 text-base outline-none focus:ring-2 focus:ring-amber-200" />
+        </div>
+        {photo && <img src={photo} alt="หลักฐาน" className="w-full max-h-48 object-cover rounded-lg ring-1 ring-slate-200" />}
+        <button onClick={async () => { const img = await pickImage(); if (img) setPhoto(img) }}
+          className={`w-full py-3.5 rounded-xl text-base font-bold active:scale-[0.98] transition ${
+            photo ? 'bg-slate-100 text-slate-500' : 'bg-white ring-1 ring-slate-300 text-slate-700'
+          }`}>
+          {photo ? '🔄 ถ่ายรูปใหม่' : '📷 ถ่ายรูปหลักฐาน (บังคับ)'}
+        </button>
+        <button disabled={busy || !valid}
+          onClick={() => onSubmit({ message: message.trim(), photo_b64: photo })}
+          className="w-full py-5 rounded-2xl bg-amber-500 hover:bg-amber-600 text-white text-xl font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+          {busy ? '⏳ กำลังส่ง…' : '📨 ส่งแจ้งเหตุ'}
+        </button>
+        {!valid && (
+          <div className="text-center text-xs text-slate-400">ต้องกรอกรายละเอียด และแนบรูปหลักฐานก่อนส่ง</div>
+        )}
+      </div>
+    </BottomSheet>
+  )
+}
+
 /* ---------- ยืนยันรูปก่อนส่ง (Phase 4) — thumbnail ให้คนขับเช็กก่อนเข้าคิว/ส่ง ---------- */
 export function PhotoConfirmSheet({ draft, onClose, busy }) {
   // draft = { label, dataUrl, confirm() }

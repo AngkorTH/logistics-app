@@ -11,6 +11,7 @@ import {
 import { errMsg } from '../api/client'
 import { Btn, ImageLightbox, PhotoThumb, money } from '../components/ui'
 import { CHECK_ITEMS } from '../components/DriverSheets'
+import ResolveIncidentModal from '../components/ResolveIncidentModal'
 
 const KIND_TH = { BREAKDOWN: '🔧 รถเสีย/ขัดข้อง', ACCIDENT: '💥 อุบัติเหตุ', OTHER: '❓ อื่นๆ' }
 const CHECK_TH = Object.fromEntries(CHECK_ITEMS.map((c) => [c.key, c.label]))
@@ -25,6 +26,7 @@ export default function ApprovalsPage() {
   const decideAdvance = useDecideAdvance()
   const [toast, setToast] = useState('')
   const [zoom, setZoom] = useState(null)  // Phase 4: ขยายดูรูปเต็มจอ
+  const [resolving, setResolving] = useState(null)  // เหตุที่กำลังยืนยันปิด (Modal แทน window.prompt)
 
   const notify = (msg) => { setToast(msg); setTimeout(() => setToast(''), 3500) }
   const driverName = (id) => {
@@ -55,12 +57,7 @@ export default function ApprovalsPage() {
               <div className="mt-1.5"><PhotoThumb src={inc.photo} label={`รูปหน้างาน ${inc.code}`} onZoom={setZoom} size="w-16 h-16" /></div>
             </div>
             <Btn color="red" disabled={resolveIncident.isPending}
-              onClick={() => {
-                const note = window.prompt('บันทึกการปิดเหตุ (เช่น เปลี่ยนยางแล้ว วิ่งต่อได้):', '')
-                if (note === null) return
-                run(() => resolveIncident.mutateAsync({ id: inc.id, note }),
-                  `✅ ปิดเหตุ ${inc.code} แล้ว — ทริปกลับมาวิ่งต่อได้`)
-              }}>
+              onClick={() => setResolving(inc)}>
               ✅ ปิดเหตุ / ปลดล็อกทริป
             </Btn>
           </div>
@@ -130,6 +127,10 @@ export default function ApprovalsPage() {
         ))}
       </section>
 
+      {resolving && (
+        <ResolveIncidentModal incident={resolving} driverLabel={driverName(resolving.driver_id)}
+          onClose={() => setResolving(null)} onDone={notify} onErr={(m) => notify(`❌ ${m}`)} />
+      )}
       <ImageLightbox image={zoom} onClose={() => setZoom(null)} />
       {toast && (
         <div className="fixed bottom-6 inset-x-4 md:inset-x-auto md:right-6 md:w-96 z-50 bg-slate-800 text-white text-sm px-4 py-3 rounded-xl shadow-lg text-center fadein">

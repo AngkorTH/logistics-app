@@ -59,3 +59,8 @@ class IncidentStatus(str, enum.Enum):
 class GpsEvent(str, enum.Enum):
     LOADED = "LOADED"        # กด "ขนของขึ้นเสร็จ" — geo-stamp ต้นทาง
     DELIVERED = "DELIVERED"  # ส่งของสำเร็จรายจุด — geo-stamp ปลายทาง
+
+
+class VehicleStatus(str, enum.Enum):
+    AVAILABLE = "AVAILABLE"      # พร้อมใช้งาน — จ่ายงานได้
+    MAINTENANCE = "MAINTENANCE"  # กำลังซ่อม — ล็อกไม่ให้จ่ายงาน (คนขับแจ้งเหตุรถมีปัญหา)

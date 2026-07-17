@@ -5,6 +5,7 @@ import { useAuth } from '../auth/AuthContext'
 import { ROLES } from '../components/ui'
 import NotificationBell from '../components/NotificationBell'
 import SosAlert from '../components/SosAlert'
+import MaintenanceAlert from '../components/MaintenanceAlert'
 
 // เมนูตามสิทธิ์ (role-based) — 🚨 Driver เห็นได้แค่ /driver เท่านั้น
 // ชุดบริหารทั้งหมด (Dispatch/Users/Vehicles/History) ไม่ปรากฏต่อ Driver เด็ดขาด
@@ -92,8 +93,9 @@ export default function Shell() {
           </div>
         </header>
 
-        {/* 🚨 Alert แดง SOS — เห็นเฉพาะทีมบริหาร (Supervisor+) */}
+        {/* 🚨 Alert แดง SOS + 🔧 รถแจ้งเหตุ/กำลังซ่อม — เห็นเฉพาะทีมบริหาร (Supervisor+) */}
         {SUP.includes(user.role) && <SosAlert />}
+        {SUP.includes(user.role) && <MaintenanceAlert />}
 
         <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6">
           <Outlet />
