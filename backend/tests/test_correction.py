@@ -78,7 +78,10 @@ def test_close_freezes_and_snapshots_amounts(db_session, driver, supervisor):
     t = upload_receipt(db_session, trip.drops[1], supervisor, ReceiptKind.TOLL, ocr_amount=80)
     approve_receipt(db_session, t, supervisor)
 
-    for d in trip.drops:
+    for i, d in enumerate(trip.drops):
+        if i > 0:  # ขาถัดไปต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อน
+            assign_trip(db_session, trip, "1กก-1234", supervisor)
+            finish_loading(db_session, trip, driver, 13.75, 100.5)
         record_delivery(db_session, d, driver, 13.8, 100.6)
     complete_trip(db_session, trip, supervisor)   # Supervisor กดจบเที่ยวก่อน
     close_trip(db_session, trip, supervisor)

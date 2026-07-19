@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user, get_trip, require_supervisor
 from app.models import Drop, Role, Trip, User, Vehicle
-from app.models.enums import TripStatus, VehicleStatus
+from app.models.enums import TripStatus, VehicleStatus, compute_allowance
 from app.schemas.auth import UserOut
 from app.schemas.ops import (
     AssignRequest,
@@ -30,11 +30,12 @@ from app.schemas.ops import (
     TripCreate,
     TripDetailOut,
     TripOut,
+    TripSummaryOut,
     UnfreezeRequest,
     VehicleOut,
 )
 from app.services.audit import who_label, write_audit
-from app.services.finance import FinanceError, compute_finance
+from app.services.finance import FinanceError, compute_finance, trip_summary
 from app.services.trip_edit import adjust_trip
 from app.services.evidence import EvidenceError, log_fuel
 from app.services.storage import StorageError
@@ -55,10 +56,14 @@ router = APIRouter(prefix="/trips", tags=["trips"])
 
 
 def _detail(trip: Trip) -> TripDetailOut:
-    """ประกอบทริป + สรุปการเงินเป็น response ก้อนเดียว"""
+    """ประกอบทริป + สรุปการเงิน + สรุปรวบยอดทั้งเที่ยว เป็น response ก้อนเดียว"""
     fin = compute_finance(trip)
     base = TripOut.model_validate(trip, from_attributes=True)
-    return TripDetailOut(**base.model_dump(), finance=FinanceOut(**fin.__dict__))
+    return TripDetailOut(
+        **base.model_dump(),
+        finance=FinanceOut(**fin.__dict__),
+        summary=TripSummaryOut(**trip_summary(trip)),
+    )
 
 
 def _assert_own_driver(trip: Trip, user: User) -> None:
@@ -97,10 +102,13 @@ def create_trip(
     db.add(trip)
     db.flush()
     for i, d in enumerate(body.drops, start=1):
+        # เบี้ยเลี้ยงคิดจากสูตร: รายได้ต่อขา × เปอร์เซ็นต์ความยาก (ไม่รับยอดจากผู้ใช้)
+        diff = d.difficulty or trip.difficulty
         db.add(Drop(
             trip_id=trip.id, seq=i, name=d.label(),
             origin=d.origin.strip(), destination=d.destination.strip(),
-            allowance=d.allowance,
+            revenue=d.revenue, difficulty=diff,
+            allowance=compute_allowance(d.revenue, diff),
         ))
     db.commit()
     db.refresh(trip)
@@ -191,12 +199,12 @@ def pending_review(
     db: Session = Depends(get_db),
     _: User = Depends(require_supervisor),
 ):
-    """แท็บ 'รอตรวจ' (ข้อ 2.2 — Supervisor+): ทริปที่คนขับส่งงานจบแล้ว (closed_at)
+    """แท็บ 'รอตรวจ' (ข้อ 2.2 — Supervisor+): ทริปที่คนคุมงานกด 'จบเที่ยว' แล้ว
     แต่ยังไม่ถูกล็อกการเงิน — เรียงเก่า→ใหม่ · กดยืนยัน = เรียก /close เดิม
     แล้วทริปจะย้ายเข้า 'ประวัติทริป' (frozen)"""
     return (
         db.query(Trip)
-        .filter(Trip.closed_at.isnot(None), Trip.frozen.is_(False))
+        .filter(Trip.completed_at.isnot(None), Trip.frozen.is_(False))
         .order_by(Trip.closed_at.asc())
         .all()
     )
@@ -361,7 +369,7 @@ def add_drop_ep(
         return add_drop(
             db, trip, actor,
             origin=body.origin, destination=body.destination,
-            name=body.name, allowance=body.allowance,
+            name=body.name, revenue=body.revenue, difficulty=body.difficulty,
         )
     except TransitionError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

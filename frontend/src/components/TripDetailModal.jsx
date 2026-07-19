@@ -36,6 +36,7 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
 
   if (!t) return null
   const fin = t.finance
+  const sum = t.summary
   // Dynamic Multi-Drop: เที่ยวหลักยัง Active จนกว่า Supervisor จะกด "จบเที่ยว" (completed_at)
   const active = !t.completed_at && !t.frozen
   // บิลเติมน้ำมันที่ผูกกับทริปตรงๆ (ไม่ผูกจุดส่ง) — คนขับกด "บันทึกเติมน้ำมัน" ระหว่างทาง
@@ -152,18 +153,57 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
         )}
       </div>
 
+      {/* ---- 🧾 สรุปรวบยอดทั้งเที่ยว (น้ำมันรวม · เลขไมล์ต้น→ปลาย · จำนวนขา · เส้นทาง) ---- */}
+      <div className="rounded-lg ring-1 ring-slate-200 p-3 mb-4">
+        <div className="text-sm font-medium text-slate-700 mb-2">🧾 สรุปรวบยอดทั้งเที่ยว</div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+          {[
+            { th: 'วิ่งไปแล้ว', v: `${sum.legs}/${sum.legs_total} ขา` },
+            { th: 'น้ำมันรวม', v: `${sum.fuel_liters.toFixed(2)} ลิตร` },
+            { th: 'เลขไมล์รวม', v: `${sum.total_km.toLocaleString('th-TH')} กม.` },
+            { th: 'อัตราสิ้นเปลือง', v: sum.km_per_liter != null ? `${sum.km_per_liter} กม./ล.` : '—' },
+          ].map((x) => (
+            <div key={x.th} className="rounded-md bg-slate-50 px-2.5 py-2">
+              <div className="text-[10px] text-slate-400">{x.th}</div>
+              <div className="text-sm font-bold text-slate-800">{x.v}</div>
+            </div>
+          ))}
+        </div>
+        <div className="text-[11px] text-slate-400 mb-2">
+          เลขไมล์ {sum.odometer_start != null ? sum.odometer_start.toLocaleString('th-TH') : '—'}
+          {' → '}
+          {sum.odometer_end != null ? sum.odometer_end.toLocaleString('th-TH') : 'ยังไม่บันทึกปลายเที่ยว'}
+          {' · ค่าน้ำมัน '}{money(sum.fuel_cost)}{' · ค่าทางหลวง '}{money(sum.toll_cost)}
+        </div>
+        {/* เส้นทางเรียงเป็นข้อๆ: 1. ลำปาง ไป กรุงเทพฯ */}
+        <div className="space-y-1">
+          {sum.route.map((r) => (
+            <div key={r.seq} className="text-sm text-slate-700">
+              <span className="text-slate-400">{r.seq}.</span>{' '}
+              {r.origin} <span className="text-slate-400">ไป</span> {r.destination}
+              {!r.delivered && <span className="ml-2 text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">ยังไม่ส่ง</span>}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* ---- งานย่อย (Sub-Trips) + หลักฐาน + บิล ---- */}
       <div className="flex items-center justify-between mb-2">
         <div className="text-sm font-medium text-slate-700">
-          📦 งานย่อย (Sub-Trips) · {t.drops.length} ใบ
+          📦 งานย่อย (Sub-Trips) · วิ่งแล้ว {sum.legs}/{sum.legs_total} ขา
           {active
             ? <span className="ml-2 text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">เที่ยวหลักยัง Active</span>
             : <span className="ml-2 text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">จบเที่ยวแล้ว</span>}
         </div>
         {active && t.drops.length < 5 && (
-          <Btn color="ghost" size="sm" onClick={() => setShowAddDrop(true)}>＋ เพิ่มงานย่อย</Btn>
+          <Btn color="orange" size="sm" onClick={() => setShowAddDrop(true)}>＋ จ่ายงานย่อยถัดไป</Btn>
         )}
       </div>
+      {active && t.status === 'WHITE' && (
+        <div className="mb-2 text-[11px] text-amber-600 bg-amber-50 ring-1 ring-amber-200 rounded-md px-2.5 py-1.5">
+          🛌 คนขับอยู่สถานะ “รองาน” — จะไปขาถัดไปไม่ได้จนกว่าจะกด “＋ จ่ายงานย่อยถัดไป”
+        </div>
+      )}
       <div className="space-y-3 mb-4">
         {t.drops.map((d) => (
           <div key={d.id} className="rounded-lg ring-1 ring-slate-200 p-3">

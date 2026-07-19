@@ -107,7 +107,14 @@ class Drop(Base):
     # Dynamic Multi-Drop: ทุกงานย่อยต้องระบุต้นทาง→ปลายทางเสมอ (บังคับที่ schema + DB)
     origin: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     destination: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    allowance: Mapped[float] = mapped_column(Float, nullable=False, default=0)  # เบี้ยเลี้ยงจุดนี้
+    # รายได้ของขานี้ (คนคุมงานกรอกตอนจ่ายงาน) — ฐานคิดเบี้ยเลี้ยง
+    revenue: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    # ความยากรายขา — ตัวคูณเปอร์เซ็นต์เบี้ยเลี้ยง (ง่าย 5% · ปานกลาง 7% · ยาก 10%)
+    difficulty: Mapped[TripDifficulty] = mapped_column(
+        Enum(TripDifficulty), nullable=False, default=TripDifficulty.MEDIUM
+    )
+    # เบี้ยเลี้ยงขานี้ = revenue × เปอร์เซ็นต์ความยาก (ระบบคิดให้ ไม่ให้กรอกมือ)
+    allowance: Mapped[float] = mapped_column(Float, nullable=False, default=0)
 
     delivered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Phase 4: เก็บ URL รูปจริง (/uploads/..) — None = ยังไม่มีรูป · "attached" = ข้อมูลเก่าก่อนมีระบบไฟล์

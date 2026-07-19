@@ -15,11 +15,16 @@ export const ROLES = {
 export const money = (n) => '฿' + (n || 0).toLocaleString('th-TH')
 
 // ความยากทริป (Trip Difficulty) — ใช้ทั้งฟอร์มจ่ายงานและคิว dispatch
+// rate = เปอร์เซ็นต์เบี้ยเลี้ยง (ต้องตรงกับ ALLOWANCE_RATE ฝั่ง backend)
 export const DIFFICULTY = {
-  EASY:   { key: 'EASY',   th: 'ง่าย',      cls: 'bg-emerald-100 text-emerald-700' },
-  MEDIUM: { key: 'MEDIUM', th: 'ปานกลาง',  cls: 'bg-amber-100 text-amber-700' },
-  HARD:   { key: 'HARD',   th: 'ยาก',       cls: 'bg-red-100 text-red-700' },
+  EASY:   { key: 'EASY',   th: 'ง่าย',      rate: 0.05, cls: 'bg-emerald-100 text-emerald-700' },
+  MEDIUM: { key: 'MEDIUM', th: 'ปานกลาง',  rate: 0.07, cls: 'bg-amber-100 text-amber-700' },
+  HARD:   { key: 'HARD',   th: 'ยาก',       rate: 0.10, cls: 'bg-red-100 text-red-700' },
 }
+
+// เบี้ยเลี้ยงต่อขา = รายได้ต่อขา × เปอร์เซ็นต์ความยาก (พรีวิวสดในฟอร์มจ่ายงาน)
+export const calcAllowance = (revenue, difficulty) =>
+  Math.round((Number(revenue) || 0) * (DIFFICULTY[difficulty]?.rate || 0) * 100) / 100
 
 // ⭐ Star rating — เรนเดอร์คะแนนคนขับเป็น "รูปดาว" เท่านั้น (ไม่มีตัวเลข/คำอธิบาย)
 // value = 0-5 · เต็มดาว = สีเหลือง, ที่เหลือ = เทาจาง

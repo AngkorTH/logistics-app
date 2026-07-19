@@ -39,7 +39,9 @@ class DropOut(BaseModel):
     name: str
     origin: str = ""        # ต้นทางของงานย่อย เช่น "ลำปาง"
     destination: str = ""   # ปลายทางของงานย่อย เช่น "กรุงเทพ"
-    allowance: float
+    revenue: float = 0                                   # รายได้ของขานี้ (ฐานคิดเบี้ยเลี้ยง)
+    difficulty: TripDifficulty = TripDifficulty.MEDIUM   # ความยากรายขา
+    allowance: float                                     # = revenue × %ความยาก
     delivered: bool
     photo: str | None = None   # URL รูปส่งของสำเร็จ (Phase 4) — None = ยังไม่มี
     tarp: str | None = None    # URL รูปผ้าใบ
@@ -84,21 +86,47 @@ class FinanceOut(BaseModel):
     payout_net: float      # ยอดจ่ายสุทธิหลังหักเบิกล่วงหน้า
 
 
+class RouteLegOut(BaseModel):
+    """1 ขาในเส้นทางของเที่ยว — เช่น "1. ลำปาง ไป กรุงเทพฯ" """
+    seq: int
+    origin: str
+    destination: str
+    delivered: bool
+    allowance: float
+
+
+class TripSummaryOut(BaseModel):
+    """สรุปรวบยอดทั้งเที่ยว — โชว์ตอนกด "จบเที่ยว" และในประวัติทริป"""
+    legs: int                            # วิ่งไปแล้วกี่ขา (ส่งสำเร็จ)
+    legs_total: int                      # จ่ายงานย่อยไปทั้งหมดกี่ขา
+    fuel_liters: float                   # น้ำมันรวมทั้งเที่ยว (ลิตร)
+    fuel_cost: float                     # ค่าน้ำมันรวม (บิลที่อนุมัติแล้ว)
+    toll_cost: float
+    odometer_start: float | None = None  # เลขไมล์ต้นเที่ยว
+    odometer_end: float | None = None    # เลขไมล์ปลายเที่ยว
+    total_km: float                      # ระยะทางรวมทั้งเที่ยว
+    km_per_liter: float | None = None
+    route: list[RouteLegOut] = []        # เส้นทางเรียงลำดับเป็นข้อๆ
+
+
 class TripDetailOut(TripOut):
-    """ทริป + สรุปการเงินในก้อนเดียว สำหรับหน้ารายละเอียด"""
+    """ทริป + สรุปการเงิน + สรุปรวบยอดทั้งเที่ยว สำหรับหน้ารายละเอียด"""
     finance: FinanceOut
+    summary: TripSummaryOut
 
 
 # --------------------------- Trip create (ฟอร์มจ่ายงาน) ---------------------------
 class DropCreate(BaseModel):
-    """งานย่อย 1 ใบ — **บังคับกรอกต้นทาง + ปลายทางเสมอ** (Dynamic Multi-Drop)
+    """งานย่อย 1 ใบ — **บังคับกรอกต้นทาง + ปลายทาง + รายได้ต่อขา**
 
     name เว้นว่างได้ ระบบจะตั้งเป็น "ต้นทาง → ปลายทาง" ให้เอง
+    เบี้ยเลี้ยงไม่รับจากผู้ใช้ — ระบบคิดเอง = รายได้ต่อขา × เปอร์เซ็นต์ความยาก
     """
     origin: str = Field(..., min_length=1)       # เริ่มจากไหน
     destination: str = Field(..., min_length=1)  # ไปส่งที่ไหน
+    revenue: float = Field(..., gt=0)            # รายได้ต่อขา (บังคับ) — ฐานคิดเบี้ยเลี้ยง
+    difficulty: TripDifficulty | None = None     # ไม่ส่ง = ใช้ความยากของทริป
     name: str = ""
-    allowance: float = Field(0, ge=0)
 
     def label(self) -> str:
         return self.name.strip() or f"{self.origin.strip()} → {self.destination.strip()}"

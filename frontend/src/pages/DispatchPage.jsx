@@ -20,7 +20,11 @@ const GROUPS = [
 ]
 
 function DriverCard({ d, showRank, rank, onOpen }) {
-  const hasTrip = !!d.active_trip_id
+  // เที่ยวหลักที่ยังไม่จบ — มีค่าแม้คนขับพักเป็น "รองาน" ระหว่างขา (คนคุมงานต้องเห็น)
+  const tripId = d.active_trip_id || d.main_trip_id
+  const tripCode = d.active_trip_code || d.main_trip_code
+  const hasTrip = !!tripId
+  const waitingNextLeg = !d.active_trip_id && !!d.main_trip_id
   return (
     <div className="rounded-xl bg-white ring-1 ring-slate-200 p-3.5 shadow-sm fadein">
       <div className="flex items-center justify-between gap-2">
@@ -29,7 +33,7 @@ function DriverCard({ d, showRank, rank, onOpen }) {
             {showRank && <span className="text-[10px] font-bold text-slate-400 bg-slate-100 rounded px-1.5 py-0.5">#{rank}</span>}
             {/* คลิกชื่อ → เปิดรายละเอียดทริปปัจจุบัน (เฉพาะคนที่ติดงานอยู่) */}
             {hasTrip ? (
-              <button onClick={() => onOpen(d.active_trip_id)}
+              <button onClick={() => onOpen(tripId)}
                 className="font-bold text-blue-600 hover:text-blue-700 hover:underline text-sm truncate text-left">
                 {d.name}
               </button>
@@ -38,8 +42,21 @@ function DriverCard({ d, showRank, rank, onOpen }) {
             )}
           </div>
           <div className="text-[11px] text-slate-400">
-            {d.emp_id}{hasTrip && <span className="text-slate-500"> · 🚛 {d.active_trip_code} · {d.plate || 'ยังไม่ผูกทะเบียน'}</span>}
+            {d.emp_id}{hasTrip && <span className="text-slate-500"> · 🚛 {tripCode} · {d.plate || 'ยังไม่ผูกทะเบียน'}</span>}
           </div>
+          {/* ความคืบหน้ารายขาในเที่ยวนี้ + เตือนว่าคนขับรอคนคุมงานจ่ายขาถัดไป */}
+          {hasTrip && (
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 rounded px-1.5 py-0.5">
+                วิ่งแล้ว {d.legs_done}/{d.legs_total} ขา
+              </span>
+              {waitingNextLeg && (
+                <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 rounded px-1.5 py-0.5">
+                  รอจ่ายขาถัดไป
+                </span>
+              )}
+            </div>
+          )}
         </div>
         {/* คะแนน = ดาวเท่านั้น */}
         <Stars value={d.rating} />

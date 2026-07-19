@@ -21,7 +21,13 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.models import Drop, GpsLog, Trip, User
-from app.models.enums import GpsEvent, TripDifficulty, TripStatus
+from app.models.enums import (
+    ALLOWANCE_RATE,
+    GpsEvent,
+    TripDifficulty,
+    TripStatus,
+    compute_allowance,
+)
 from app.services.audit import who_label, write_audit
 from app.services.notification import push_notification
 
@@ -347,20 +353,18 @@ def record_delivery(
     Idempotency: ถ้าจุดนี้ delivered ไปแล้ว ไม่สร้าง GPS log ซ้ำ
     """
     trip = drop.trip
-    # ส่งของได้เมื่อกำลังวิ่ง (GREEN) — หรือกลับเป็น WHITE เพราะเพิ่งจบงานย่อยใบก่อน
-    # แต่ของเที่ยวนี้ยังอยู่บนรถ (ขึ้นของแล้ว + เที่ยวหลักยัง Active)
-    on_the_road = (
-        trip.status is TripStatus.WHITE
-        and trip.finished_loading_at is not None
-        and trip.completed_at is None
-        and not trip.frozen
-    )
-    if trip.status is not TripStatus.GREEN and not on_the_road:
-        raise TransitionError(
-            f"ยังส่งของจุด {drop.seq} ไม่ได้ — ทริปต้องอยู่สถานะ GREEN (ปัจจุบัน {trip.status.value})"
-        )
+    # กดซ้ำ (double-tap) → คืนค่าเดิมเงียบๆ ต้องเช็คก่อนการ์ดสถานะ
+    # เพราะพอส่งขาสำเร็จ ทริปจะพลิกเป็น WHITE ทันที การกดซ้ำจึงไม่ควรกลายเป็น error
     if drop.delivered:
-        return drop  # กันบันทึกซ้ำ
+        return drop
+
+    # 1 ขาต่อครั้ง: ส่งของได้เฉพาะตอนกำลังวิ่ง (GREEN) เท่านั้น
+    # จบขาแล้วคนขับกลับเป็น WHITE และ **ไปขาถัดไปเองไม่ได้** จนกว่าคนคุมงานจะจ่ายงานย่อยใหม่
+    if trip.status is not TripStatus.GREEN:
+        raise TransitionError(
+            f"ยังส่งของจุด {drop.seq} ไม่ได้ — ต้องรอคนคุมงานจ่ายงานย่อยนี้ก่อน "
+            f"(ทริปต้องอยู่สถานะ GREEN · ปัจจุบัน {trip.status.value})"
+        )
 
     _assert_not_paused(trip)  # มีเหตุ SOS ค้าง → ล็อกทุกการเดินหน้า
 
@@ -447,9 +451,13 @@ def complete_trip(db: Session, trip: Trip, actor: User, *, force: bool = False) 
 
 def add_drop(
     db: Session, trip: Trip, actor: User, *,
-    origin: str, destination: str, name: str = "", allowance: float = 0,
+    origin: str, destination: str, name: str = "",
+    revenue: float = 0, difficulty: TripDifficulty | None = None,
 ) -> Drop:
-    """เพิ่มงานย่อย (Sub-Trip) เข้าไปในทริปเดิมที่ยัง Active — ต้นทาง/ปลายทางบังคับ"""
+    """เพิ่มงานย่อย (Sub-Trip) เข้าไปในทริปเดิมที่ยัง Active
+
+    บังคับ ต้นทาง/ปลายทาง/รายได้ต่อขา · เบี้ยเลี้ยงคิดเอง = รายได้ × เปอร์เซ็นต์ความยาก
+    """
     if trip.frozen:
         raise TransitionError(f"ทริป {trip.code} ถูกล็อกการเงินแล้ว — เพิ่มงานย่อยไม่ได้")
     if trip.completed_at is not None:
@@ -458,14 +466,19 @@ def add_drop(
         raise TransitionError("ต้องกรอกทั้งต้นทาง (เริ่มจากไหน) และปลายทาง (ไปส่งที่ไหน)")
     if len(trip.drops) >= 5:
         raise TransitionError("1 เที่ยวมีงานย่อยได้สูงสุด 5 ใบ")
+    if revenue <= 0:
+        raise TransitionError("ต้องกรอกรายได้ต่อขา (มากกว่า 0) เพื่อคิดเบี้ยเลี้ยง")
 
+    diff = difficulty or trip.difficulty
     drop = Drop(
         trip_id=trip.id,
         seq=max((d.seq for d in trip.drops), default=0) + 1,
         name=name.strip() or f"{origin.strip()} → {destination.strip()}",
         origin=origin.strip(),
         destination=destination.strip(),
-        allowance=allowance,
+        revenue=revenue,
+        difficulty=diff,
+        allowance=compute_allowance(revenue, diff),
     )
     db.add(drop)
     db.commit()
@@ -474,7 +487,8 @@ def add_drop(
 
     write_audit(
         db, who_label(actor), "เพิ่มงานย่อย (Sub-Trip)", trip.code,
-        f"จุด {drop.seq}: {drop.origin} → {drop.destination} · เบี้ยเลี้ยง {drop.allowance:.2f}",
+        f"จุด {drop.seq}: {drop.origin} → {drop.destination} · รายได้ {drop.revenue:.2f} × "
+        f"{ALLOWANCE_RATE[diff] * 100:.0f}% ({diff.value}) = เบี้ยเลี้ยง {drop.allowance:.2f}",
     )
     return drop
 
@@ -507,7 +521,7 @@ def compute_km_per_liter(trip: Trip) -> float | None:
 def end_trip(
     db: Session, trip: Trip, actor: User, odometer_end: float, *, force: bool = False
 ) -> Trip:
-    """จบงาน: บันทึกเลขไมล์จบ → คิดระยะทาง + km/L แล้วเก็บลงทริป
+    """บันทึกเลขไมล์ปลายเที่ยว → คิดระยะทาง + km/L แล้วเก็บลงทริป (ไม่ปิดเที่ยว)
 
     การ์ด:
     - freeze แล้ว → ห้ามแก้เลขไมล์ (ต้องขอปลดล็อกก่อน)
@@ -533,8 +547,7 @@ def end_trip(
     if trip.odometer_start is not None:
         trip.distance_km = round(trip.odometer_end - trip.odometer_start, 2)
     trip.km_per_liter = compute_km_per_liter(trip)
-    trip.status = TripStatus.WHITE
-    trip.closed_at = trip.closed_at or _now()
+    # หมายเหตุ: ไม่ปิดเที่ยวตรงนี้ — การ "จบเที่ยว" เป็นหน้าที่คนคุมงาน (complete_trip) เท่านั้น
     if undelivered:
         trip.override = True
     db.commit()
@@ -572,9 +585,8 @@ def close_trip(
 
     _assert_not_paused(trip)  # มีเหตุ SOS ค้าง → ปิดเหตุก่อนจึงล็อกการเงินได้
 
-    # ต้อง "จบเที่ยว" (Supervisor) หรือจบงานด้วยเลขไมล์จบก่อน จึงจะล็อกการเงินได้
-    completed = trip.completed_at is not None or trip.closed_at is not None
-    if not completed:
+    # ต้องกด "จบเที่ยว" (Supervisor) ก่อนเท่านั้น จึงจะล็อกการเงินได้
+    if trip.completed_at is None and trip.closed_at is None:
         raise TransitionError(
             f"ล็อกการเงินไม่ได้ — ต้องกด 'จบเที่ยว' ของทริป {trip.code} ก่อน "
             f"(ปัจจุบัน {trip.status.value} · เที่ยวหลักยัง Active)"

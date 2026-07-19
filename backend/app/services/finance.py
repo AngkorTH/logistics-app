@@ -149,3 +149,42 @@ def set_bonus(db: Session, trip: Trip, actor, amount: float) -> Trip:
 def _notify_admin(trip: Trip, actor) -> None:
     """แจ้งเตือน Admin เมื่อมีการหักเงิน (stub — จะต่อ push/inbox จริงภายหลัง)"""
     print(f"[NOTIFY→ADMIN] {who_label(actor)} หักเงินทริป {trip.code} {trip.penalty:.2f} บาท")
+
+
+def trip_summary(trip: Trip) -> dict:
+    """สรุปรวบยอดทั้งเที่ยว (ใช้ตอนกด "จบเที่ยว" และในประวัติทริป)
+
+    - legs        = จำนวนขาที่วิ่งทั้งหมด (งานย่อยที่ส่งสำเร็จแล้ว) / legs_total = ที่จ่ายไปทั้งหมด
+    - fuel_liters = ลิตรรวมทุกบิลน้ำมันในเที่ยว · fuel_cost = ยอดเงินค่าน้ำมันที่อนุมัติแล้ว
+    - odometer    = เลขไมล์ต้นเที่ยว → ปลายเที่ยว · total_km = ระยะทางรวมทั้งเที่ยว
+    - route       = รายการเส้นทางเรียงลำดับ เช่น 1. ลำปาง ไป กรุงเทพฯ
+    """
+    fin = compute_finance(trip)
+    drops = sorted(trip.drops, key=lambda d: d.seq)
+
+    if trip.odometer_start is not None and trip.odometer_end is not None:
+        total_km = round(trip.odometer_end - trip.odometer_start, 2)
+    else:
+        total_km = round(trip.distance_km or 0.0, 2)
+
+    return {
+        "legs": sum(1 for d in drops if d.delivered),
+        "legs_total": len(drops),
+        "fuel_liters": total_liters(trip),
+        "fuel_cost": fin.fuel_total,
+        "toll_cost": fin.toll_total,
+        "odometer_start": trip.odometer_start,
+        "odometer_end": trip.odometer_end,
+        "total_km": total_km,
+        "km_per_liter": trip.km_per_liter,
+        "route": [
+            {
+                "seq": d.seq,
+                "origin": d.origin or "—",
+                "destination": d.destination or d.name,
+                "delivered": d.delivered,
+                "allowance": round(d.allowance, 2),
+            }
+            for d in drops
+        ],
+    }

@@ -38,6 +38,8 @@ class DriverQueueItem:
     prev_difficulty: TripDifficulty | None
     prev_load_seconds: float | None
     active_trip: Trip | None = None   # ทริปที่กำลังวิ่ง (ORANGE/GREEN) — เปิด Trip Details modal
+    # เที่ยวหลักที่ยังไม่จบ (รวมตอนคนขับพักเป็น WHITE ระหว่างขา) — คนคุมงานต้องเห็นว่าเที่ยวยังค้าง
+    main_trip: Trip | None = None
 
 
 def _active_trip(db: Session, driver: User) -> Trip | None:
@@ -50,6 +52,25 @@ def _active_trip(db: Session, driver: User) -> Trip | None:
         .filter(
             Trip.driver_id == driver.id,
             Trip.status.in_([TripStatus.ORANGE, TripStatus.GREEN]),
+        )
+        .order_by(Trip.assigned_at.desc())
+        .first()
+    )
+
+
+def _main_trip(db: Session, driver: User) -> Trip | None:
+    """เที่ยวหลักที่ยัง Active ของคนขับ — ยังไม่กด "จบเที่ยว" และยังไม่ล็อกการเงิน
+
+    ต่างจาก _active_trip: อันนี้ยังคืนค่าแม้คนขับจะพักเป็น WHITE ระหว่างขา
+    (จบขาแล้วรอคนคุมงานจ่ายงานย่อยใบถัดไป) — คนคุมงานต้องเห็นว่าเที่ยวยังไม่จบ
+    """
+    return (
+        db.query(Trip)
+        .filter(
+            Trip.driver_id == driver.id,
+            Trip.completed_at.is_(None),
+            Trip.frozen.is_(False),
+            Trip.assigned_at.isnot(None),
         )
         .order_by(Trip.assigned_at.desc())
         .first()
@@ -104,6 +125,7 @@ def build_dispatch_queue(db: Session) -> dict[str, list[DriverQueueItem]]:
             prev_difficulty=prev.difficulty if prev else None,
             prev_load_seconds=_load_seconds(prev),
             active_trip=active,
+            main_trip=active or _main_trip(db, drv),
         )
         if status is TripStatus.ORANGE:
             groups["orange"].append(item)

@@ -78,7 +78,8 @@ def test_end_trip_computes_km_per_liter(db_session, driver):
     assert trip.odometer_end == 1250
     assert trip.distance_km == 250            # 1250 − 1000
     assert trip.km_per_liter == 12.5          # 250 / 20 ปัด 1 ตำแหน่ง
-    assert trip.status is TripStatus.WHITE and trip.closed_at is not None
+    # บันทึกเลขไมล์ปลายเที่ยวไม่ปิดเที่ยว — "จบเที่ยว" เป็นหน้าที่คนคุมงาน (complete_trip)
+    assert trip.completed_at is None and trip.closed_at is None
 
 
 def test_km_per_liter_rounds_to_one_decimal(db_session, driver):

@@ -21,6 +21,19 @@ class TripDifficulty(str, enum.Enum):
     HARD = "HARD"       # ยาก
 
 
+# เปอร์เซ็นต์เบี้ยเลี้ยงตามความยาก — เบี้ยเลี้ยงต่อขา = รายได้ต่อขา × เปอร์เซ็นต์นี้
+ALLOWANCE_RATE = {
+    TripDifficulty.EASY: 0.05,    # ง่าย 5%
+    TripDifficulty.MEDIUM: 0.07,  # ปานกลาง 7%
+    TripDifficulty.HARD: 0.10,    # ยาก 10%
+}
+
+
+def compute_allowance(revenue: float, difficulty: TripDifficulty) -> float:
+    """เบี้ยเลี้ยงของขา 1 ใบ — ปัดทศนิยม 2 ตำแหน่ง"""
+    return round((revenue or 0.0) * ALLOWANCE_RATE[difficulty], 2)
+
+
 class ReceiptKind(str, enum.Enum):
     FUEL = "FUEL"   # บิลน้ำมัน
     TOLL = "TOLL"   # บิลทางหลวง

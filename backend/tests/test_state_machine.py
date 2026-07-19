@@ -78,6 +78,13 @@ def test_full_lifecycle_white_orange_green_white(db_session, driver, supervisor)
     record_delivery(db_session, trip.drops[0], driver, 13.81, 100.6)
     assert trip.status is TripStatus.WHITE
     assert trip.completed_at is None
+
+    # ขาถัดไปวิ่งเองไม่ได้ — ต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อน
+    with pytest.raises(TransitionError):
+        record_delivery(db_session, trip.drops[1], driver, 13.82, 100.6)
+    assign_trip(db_session, trip, "1กก-1234", supervisor)
+    finish_loading(db_session, trip, driver, 13.75, 100.5)
+
     # ส่งงานย่อยใบสุดท้าย → ยังไม่จบเที่ยวเอง ต้องรอ Supervisor กด
     record_delivery(db_session, trip.drops[1], driver, 13.82, 100.6)
     assert all(d.delivered and d.photo for d in trip.drops)

@@ -163,8 +163,12 @@ def test_full_flow(client, seeded, db_session):
     assert client.post(f"/trips/{tid}/penalty",
                        json={"amount": 9999, "reason": "เยอะ"}, headers=sv).status_code == 400
 
-    # ส่งของครบ 2 จุด
-    for d in (d0, d1):
+    # ส่งของครบ 2 ขา — จบขาแล้วคนขับกลับเป็น "รองาน" ต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อนวิ่งขาถัดไป
+    for i, d in enumerate((d0, d1)):
+        if i > 0:
+            assert client.post(f"/trips/{tid}/assign", json={}, headers=sv).status_code == 200
+            assert client.post(f"/trips/{tid}/finish-loading",
+                               json={"lat": 13.7, "lng": 100.5}, headers=drv).status_code == 200
         r = client.post(f"/drops/{d}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
         assert r.status_code == 200 and r.json()["delivered"] is True
 

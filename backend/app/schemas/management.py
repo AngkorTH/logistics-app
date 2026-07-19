@@ -24,6 +24,11 @@ class DispatchDriverOut(BaseModel):
     active_trip_id: int | None = None
     active_trip_code: str | None = None
     plate: str | None = None          # เลขทะเบียนรถของทริปที่กำลังวิ่ง (ใช้ค้นหาด้วย)
+    # เที่ยวหลักที่ยังไม่กด "จบเที่ยว" — มีค่าแม้คนขับพักเป็น WHITE ระหว่างขา
+    main_trip_id: int | None = None
+    main_trip_code: str | None = None
+    legs_done: int = 0                # วิ่งไปแล้วกี่ขาในเที่ยวนี้
+    legs_total: int = 0               # จ่ายงานย่อยไปทั้งหมดกี่ขา
 
 
 class DispatchQueueOut(BaseModel):

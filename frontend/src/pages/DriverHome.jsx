@@ -9,7 +9,7 @@ import {
   useLogFuel, useEndTrip,
 } from '../api/hooks'
 import { errMsg } from '../api/client'
-import { ImageLightbox, PhotoThumb, STATUS, StatusPill, money } from '../components/ui'
+import { DIFFICULTY, ImageLightbox, PhotoThumb, STATUS, StatusPill, money } from '../components/ui'
 import { AdvanceSheet, EndTripSheet, InspectionCard, PhotoConfirmSheet, RefuelSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
 import { pickImage } from '../utils/image'
 import { useOffline } from '../offline/useOffline'
@@ -211,6 +211,10 @@ export default function DriverHome() {
 
   const s = STATUS[active.status]
   const allowanceTotal = active.drops.reduce((sm, d) => sm + d.allowance, 0)
+  // 1 ขาต่อครั้ง: คนขับเห็นเฉพาะ "งานล่าสุด" ที่คนคุมงานเพิ่งจ่ายมา (ขาที่ยังไม่ส่ง seq มากสุด)
+  // ขาถัดไปจะโผล่ก็ต่อเมื่อคนคุมงานจ่ายงานย่อยใบใหม่เท่านั้น
+  const currentLeg = [...active.drops].filter((d) => !d.delivered).sort((a, b) => a.seq - b.seq).pop()
+  const legNo = currentLeg ? currentLeg.seq : active.drops.length
 
   // 🚨 ป้ายเตือนทริปถูกพัก (SOS ค้าง) — ล็อกทุกปุ่มเดินหน้า
   const pausedBanner = active.paused && (
@@ -228,13 +232,24 @@ export default function DriverHome() {
         {netBadge}
         <TripHeader trip={active} s={s} allowanceTotal={allowanceTotal} />
         {pausedBanner}
+        {/* งานปัจจุบัน 1 ใบเท่านั้น — ขาถัดไปจะโผล่เมื่อคนคุมงานจ่ายงานใหม่ */}
         <div className="bg-orange-50 ring-1 ring-orange-200 rounded-2xl p-5 text-center">
-          <div className="text-sm text-orange-700 font-medium mb-1">📦 งานย่อยของเที่ยวนี้ ({active.drops.length} ใบ)</div>
-          {active.drops.map((d) => (
-            <div key={d.id} className="text-base font-semibold text-slate-700 py-0.5">
-              {d.seq}. {d.origin || '—'} <span className="text-orange-500">➜</span> {d.destination || d.name}
+          <div className="text-sm text-orange-700 font-medium mb-1">📦 งานที่ต้องทำตอนนี้ (ขาที่ {legNo})</div>
+          <div className="text-lg font-bold text-slate-700 py-0.5">
+            {currentLeg ? (currentLeg.origin || '—') : '—'}
+            <span className="text-orange-500 mx-1.5">➜</span>
+            {currentLeg ? (currentLeg.destination || currentLeg.name) : '—'}
+          </div>
+          {currentLeg && (
+            <div className="mt-2 inline-block rounded-lg bg-emerald-50 ring-1 ring-emerald-200 px-3 py-1.5">
+              <span className="text-sm font-bold text-emerald-700">💰 เบี้ยเลี้ยงขานี้ {money(currentLeg.allowance)}</span>
+              {currentLeg.revenue > 0 && (
+                <span className="text-[11px] text-slate-500 ml-2">
+                  ({money(currentLeg.revenue)} × {(DIFFICULTY[currentLeg.difficulty]?.rate * 100 || 0).toFixed(0)}% · {DIFFICULTY[currentLeg.difficulty]?.th})
+                </span>
+              )}
             </div>
-          ))}
+          )}
           <div className="text-xs text-orange-500 mt-2">🔔 อย่าลืมเตรียมคลุมผ้าใบก่อนออกรถ!</div>
         </div>
 
@@ -303,8 +318,7 @@ export default function DriverHome() {
     )
   }
 
-  /* ---------- 🟢 GREEN: กำลังไปส่ง (Multi-Drop + 4 ปุ่มหลักฐาน) ---------- */
-  const remaining = active.drops.filter((d) => !d.delivered).length
+  /* ---------- 🟢 GREEN: กำลังไปส่ง (งานปัจจุบัน 1 ใบ + 4 ปุ่มหลักฐาน) ---------- */
   const locked = active.paused // SOS ค้าง — ล็อกปุ่มหลักฐานทุกจุด
   return (
     <div className="max-w-md mx-auto space-y-4 fadein">
@@ -312,12 +326,12 @@ export default function DriverHome() {
       <TripHeader trip={active} s={s} allowanceTotal={allowanceTotal} />
       {pausedBanner}
       <div className="text-sm font-semibold text-emerald-700 text-center">
-        {remaining > 0
-          ? `เหลืออีก ${remaining} งานย่อย — ส่งรูป "ส่งของสำเร็จ" แล้วจะกลับเป็น "รองาน" ทันที`
-          : 'ส่งครบทุกงานย่อยแล้ว ✅ กลับสู่สถานะรองาน — รอคนคุมงานกด "จบเที่ยว"'}
+        ส่งรูป “ส่งของสำเร็จ” ของขานี้ แล้วจะกลับเป็น “รองาน” ทันที
+        <div className="text-xs font-normal text-slate-400 mt-0.5">ขาถัดไปจะขึ้นให้เมื่อคนคุมงานจ่ายงานใหม่</div>
       </div>
 
-      {active.drops.map((d) => {
+      {/* งานปัจจุบันใบเดียว — ขาที่ส่งไปแล้วไม่ต้องโชว์ให้คนขับอีก */}
+      {(currentLeg ? [currentLeg] : []).map((d) => {
         // นับ "รอส่ง" (คิวออฟไลน์) เป็นส่งแล้วบน UI — กันคนขับกดซ้ำระหว่างรอเน็ต
         const qKind = (k) => pending.some((p) => p.url === `/drops/${d.id}/receipt` && p.body?.kind === k)
         const hasFuel = d.receipts.some((r) => r.kind === 'FUEL') || qKind('FUEL')
@@ -331,7 +345,14 @@ export default function DriverHome() {
                 {d.delivered ? '✅' : '📍'} จุด {d.seq}: {d.origin || '—'}
                 <span className="text-orange-500 mx-1">➜</span>{d.destination || d.name}
               </div>
-              <div className="text-xs text-slate-400">{money(d.allowance)}</div>
+              <div className="text-right">
+                <div className="text-sm font-bold text-emerald-700">{money(d.allowance)}</div>
+                {d.revenue > 0 && (
+                  <div className="text-[10px] text-slate-400">
+                    {money(d.revenue)} × {(DIFFICULTY[d.difficulty]?.rate * 100 || 0).toFixed(0)}%
+                  </div>
+                )}
+              </div>
             </div>
             {d.delivered ? (
               <div className="flex items-center gap-2">
@@ -372,20 +393,19 @@ export default function DriverHome() {
                   onClick={() => captureThen(`📸 รูปส่งของสำเร็จ จุด ${d.seq}`, async (img) => {
                     const gps = await getGps()
                     await delivery.mutateAsync({ dropId: d.id, ...gps, photo_b64: img })
-                    notify(`📍 จุด ${d.seq} ส่งสำเร็จ! บันทึกรูป + GPS ปลายทางแล้ว`)
-                    // จุดสุดท้าย → เด้งขอ "เลขไมล์จบ" ต่อทันที (ทริปจะพลิกเป็นรองานหลังจากนี้)
-                    if (remaining <= 1) setEndTarget({ id: active.id, code: active.code, odometer_start: active.odometer_start })
+                    notify(`📍 ขาที่ ${d.seq} ส่งสำเร็จ! กลับเป็น "รองาน" — รอคนคุมงานจ่ายงานถัดไป`)
                   })} />
               </div>
             )}
           </div>
         )
       })}
-      {/* 🏁 จบงาน — กรอกเลขไมล์จบอย่างเดียว (เลขไมล์เริ่มบันทึกไปแล้วตอนเริ่มงาน) */}
+      {/* 🧭 บันทึกเลขไมล์ปลายเที่ยว — ใช้คิดระยะทาง/อัตราสิ้นเปลืองรวมของทั้งเที่ยว
+           การ "จบเที่ยว" จริงเป็นหน้าที่คนคุมงาน ไม่ใช่ปุ่มนี้ */}
       <button disabled={locked}
         onClick={() => setEndTarget({ id: active.id, code: active.code, odometer_start: active.odometer_start })}
         className="w-full py-4 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white text-lg font-bold shadow active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
-        🏁 จบงาน — บันทึกเลขไมล์จบ
+        🧭 บันทึกเลขไมล์ปลายเที่ยว
       </button>
       {actionRow}
       {sheets}

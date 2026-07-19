@@ -67,20 +67,23 @@ def test_sub_trip_done_frees_driver_but_main_trip_stays_active(client, staff):
     assert trip.closed_at is None
 
 
-def test_full_delivery_does_not_auto_complete(client, staff):
-    """ส่งครบทุกงานย่อย ก็ยังไม่จบเที่ยว — ต้องรอ Supervisor กด 'จบเที่ยว'"""
+def test_leg_done_needs_new_dispatch_and_no_auto_complete(client, staff):
+    """จบขาแล้วไปขาถัดไปเองไม่ได้ · และเที่ยวไม่จบเองต้องรอ Supervisor กด 'จบเที่ยว'"""
     trip = _green_trip(staff, "T-AC2", n=2)
     drv = login(client, "D01")
-    for d in trip.drops:
-        assert client.post(f"/drops/{d.id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
+    assert client.post(f"/drops/{trip.drops[0].id}/delivery",
+                       json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
+    # ขาถัดไปวิ่งเองไม่ได้ — ต้องรอคนคุมงานจ่ายงานย่อยใหม่ (สถานะกลับไป WHITE แล้ว)
+    assert client.post(f"/drops/{trip.drops[1].id}/delivery",
+                       json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 400
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE
     assert trip.completed_at is None
     # ยังไม่จบเที่ยว → ล็อกการเงินไม่ได้
     sv = login(client, "SV01")
     assert client.post(f"/trips/{trip.id}/close", headers=sv).status_code == 400
-    # Supervisor กดจบเที่ยว → completed_at ถูกตั้ง แต่ยังไม่ freeze
-    r = client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)
+    # Supervisor กดจบเที่ยว (force เพราะขาที่ 2 ยังไม่ได้วิ่ง) → completed_at ถูกตั้ง แต่ยังไม่ freeze
+    r = client.post(f"/trips/{trip.id}/complete", json={"force": True}, headers=sv)
     assert r.status_code == 200
     assert r.json()["completed_at"] is not None and r.json()["frozen"] is False
 
@@ -106,15 +109,21 @@ def test_add_sub_trip_to_active_trip(client, staff):
     sv = login(client, "SV01")
     # ขาด origin → 422 (schema บังคับ)
     assert client.post(f"/trips/{trip.id}/drops", json={"destination": "กรุงเทพ"}, headers=sv).status_code == 422
+    # ขาด revenue → 422 (บังคับกรอกรายได้ต่อขา)
+    assert client.post(f"/trips/{trip.id}/drops",
+                       json={"origin": "ลำปาง", "destination": "กรุงเทพ"}, headers=sv).status_code == 422
     r = client.post(f"/trips/{trip.id}/drops",
-                    json={"origin": "ลำปาง", "destination": "กรุงเทพ", "allowance": 400}, headers=sv)
+                    json={"origin": "ลำปาง", "destination": "กรุงเทพ",
+                          "revenue": 10000, "difficulty": "HARD"}, headers=sv)
     assert r.status_code == 200
     body = r.json()
     assert body["seq"] == 2 and body["origin"] == "ลำปาง" and body["destination"] == "กรุงเทพ"
+    assert body["revenue"] == 10000 and body["allowance"] == 1000  # 10000 × 10% (ยาก)
     # จบเที่ยวแล้วเพิ่มไม่ได้อีก
     client.post(f"/trips/{trip.id}/complete", json={"force": True}, headers=sv)
     assert client.post(f"/trips/{trip.id}/drops",
-                       json={"origin": "ก", "destination": "ข"}, headers=sv).status_code == 400
+                       json={"origin": "ก", "destination": "ข", "revenue": 5000},
+                       headers=sv).status_code == 400
 
 
 def test_bills_reviewable_after_complete(client, staff):

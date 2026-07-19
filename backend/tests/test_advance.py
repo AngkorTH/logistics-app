@@ -52,7 +52,11 @@ def _run_to_delivered(db, trip, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
     finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
-    for d in trip.drops:
+    # 1 ขาต่อครั้ง: จบขาแล้วคนขับกลับเป็น WHITE ต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อนวิ่งขาถัดไป
+    for i, d in enumerate(trip.drops):
+        if i > 0:
+            assign_trip(db, trip, "1กก-1234", supervisor)
+            finish_loading(db, trip, driver, 13.75, 100.5)
         record_delivery(db, d, driver, 13.8, 100.6)
     # flow ใหม่: เที่ยวหลักจบสมบูรณ์เมื่อ Supervisor กด "จบเที่ยว" เท่านั้น
     complete_trip(db, trip, supervisor)

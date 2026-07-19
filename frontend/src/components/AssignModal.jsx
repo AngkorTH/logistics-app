@@ -5,10 +5,10 @@
 import { useState } from 'react'
 import { useAvailableDrivers, useVehicles, useCreateTrip, useAssign, useAddDrop } from '../api/hooks'
 import { errMsg } from '../api/client'
-import { Btn, Field, Modal, inputCls, DIFFICULTY } from './ui'
+import { Btn, Field, Modal, inputCls, money, DIFFICULTY, calcAllowance } from './ui'
 
 // Dynamic Multi-Drop: ทุกงานย่อยบังคับกรอก "เริ่มจากไหน" + "ไปส่งที่ไหน"
-const emptyDrop = () => ({ origin: '', destination: '', allowance: 300 })
+const emptyDrop = () => ({ origin: '', destination: '', revenue: '' })
 
 // ป้ายกำกับคนขับที่ "รองาน" 2 ประเภท (waiting_type จาก backend)
 const WAITING = {
@@ -45,10 +45,12 @@ export default function AssignModal({ onClose, onDone }) {
     if (!difficulty) return setErr('เลือกความยากของทริป')
     if (drops.some((d) => !d.origin.trim() || !d.destination.trim()))
       return setErr('กรอก "เริ่มจากไหน" และ "ไปส่งที่ไหน" ให้ครบทุกงานย่อย')
+    if (drops.some((d) => !(Number(d.revenue) > 0)))
+      return setErr('กรอก "รายได้ต่อขา" ให้ครบทุกงานย่อย (ต้องมากกว่า 0)')
     setErr('')
     const payload = drops.map((d) => ({
       origin: d.origin.trim(), destination: d.destination.trim(),
-      allowance: Number(d.allowance) || 0,
+      revenue: Number(d.revenue), difficulty,
     }))
     try {
       // คนขับที่เที่ยวหลักยังไม่จบ → เพิ่มงานย่อยเข้าเที่ยวเดิม (ไม่สร้างเที่ยวใหม่ซ้อน)
@@ -112,13 +114,13 @@ export default function AssignModal({ onClose, onDone }) {
             : <span className="text-red-500 font-semibold"> — คนขับคนนี้ยังไม่ถูกผูกรถ! ไปผูกที่หน้า "คลังรถยนต์" ก่อน</span>
         })()}
       </div>
-      <Field label="ความยากของทริป (Difficulty)" hint="ใช้จัดลำดับคิวจ่ายงานครั้งถัดไปของคนขับ">
+      <Field label="ความยากของทริป (Difficulty)" hint="ง่าย 5% · ปานกลาง 7% · ยาก 10% ของรายได้ต่อขา — ใช้คิดเบี้ยเลี้ยง + จัดลำดับคิวจ่ายงาน">
         <div className="grid grid-cols-3 gap-2">
           {Object.values(DIFFICULTY).map((d) => (
             <button key={d.key} type="button" onClick={() => setDifficulty(d.key)}
               className={`rounded-lg py-2 text-sm font-medium ring-1 transition-colors ${
                 difficulty === d.key ? `${d.cls} ring-transparent` : 'bg-white text-slate-500 ring-slate-300 hover:bg-slate-50'}`}>
-              {d.th}
+              {d.th} <span className="opacity-70">{(d.rate * 100).toFixed(0)}%</span>
             </button>
           ))}
         </div>
@@ -128,7 +130,10 @@ export default function AssignModal({ onClose, onDone }) {
       </Field>
 
       <div className="text-xs font-medium text-slate-600 mb-1">
-        งานย่อย (Sub-Trip / Multi-Drop 1-5 ใบ) — บังคับกรอกต้นทางและปลายทางทุกใบ
+        งานย่อย (Sub-Trip) — จ่ายได้ทีละ 1 ขา · บังคับกรอกต้นทางและปลายทาง
+        <div className="text-[11px] font-normal text-slate-400">
+          คนขับเห็นได้ทีละ 1 งานเท่านั้น · ขาถัดไปค่อยกด “＋ จ่ายงานย่อยถัดไป” ในรายละเอียดทริป
+        </div>
       </div>
       <div className="space-y-2 mb-3">
         {drops.map((d, i) => (
@@ -146,15 +151,29 @@ export default function AssignModal({ onClose, onDone }) {
               <span className="text-slate-400 text-sm">➜</span>
               <input className={`${inputCls} flex-1 !min-w-[130px]`} placeholder="ไปส่งที่ไหน เช่น กรุงเทพ"
                 value={d.destination} onChange={(e) => setDrop(i, { destination: e.target.value })} />
-              <input className={`${inputCls} !w-24`} type="number" min="0" title="เบี้ยเลี้ยง (บาท)"
-                value={d.allowance} onChange={(e) => setDrop(i, { allowance: e.target.value })} />
+              <input className={`${inputCls} !w-32`} type="number" min="0" placeholder="รายได้ต่อขา *"
+                title="รายได้ต่อขา (บาท) — บังคับ" value={d.revenue}
+                onChange={(e) => setDrop(i, { revenue: e.target.value })} />
+            </div>
+            {/* เบี้ยเลี้ยงคิดสดทันที = รายได้ต่อขา × เปอร์เซ็นต์ความยาก */}
+            <div className="mt-1.5 text-[11px]">
+              {!difficulty ? (
+                <span className="text-slate-400">เลือกความยากก่อน ระบบจะคิดเบี้ยเลี้ยงให้อัตโนมัติ</span>
+              ) : Number(d.revenue) > 0 ? (
+                <span className="text-emerald-700 font-semibold">
+                  💰 เบี้ยเลี้ยงขานี้ {money(calcAllowance(d.revenue, difficulty))}
+                  <span className="font-normal text-slate-400">
+                    {' '}({money(Number(d.revenue))} × {(DIFFICULTY[difficulty].rate * 100).toFixed(0)}% · {DIFFICULTY[difficulty].th})
+                  </span>
+                </span>
+              ) : (
+                <span className="text-slate-400">กรอกรายได้ต่อขาเพื่อดูเบี้ยเลี้ยง</span>
+              )}
             </div>
           </div>
         ))}
       </div>
-      {drops.length < 5 && (
-        <Btn color="ghost" size="sm" onClick={() => setDrops((ds) => [...ds, emptyDrop()])}>＋ เพิ่มงานย่อย</Btn>
-      )}
+
 
       {err && <div className="text-xs text-red-500 mt-3">{err}</div>}
       <div className="flex gap-2 mt-4">

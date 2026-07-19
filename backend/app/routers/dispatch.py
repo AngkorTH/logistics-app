@@ -16,6 +16,7 @@ router = APIRouter(prefix="/dispatch", tags=["dispatch"])
 
 def _to_out(item: DriverQueueItem) -> DispatchDriverOut:
     trip = item.active_trip
+    main = item.main_trip
     return DispatchDriverOut(
         id=item.driver.id,
         emp_id=item.driver.emp_id,
@@ -26,7 +27,12 @@ def _to_out(item: DriverQueueItem) -> DispatchDriverOut:
         prev_load_seconds=item.prev_load_seconds,
         active_trip_id=trip.id if trip else None,
         active_trip_code=trip.code if trip else None,
-        plate=trip.plate if trip else None,
+        plate=(trip or main).plate if (trip or main) else None,
+        # เที่ยวหลักที่ยังไม่จบ + ความคืบหน้ารายขา (คนคุมงานดูว่าวิ่งไปแล้วกี่ขา)
+        main_trip_id=main.id if main else None,
+        main_trip_code=main.code if main else None,
+        legs_done=sum(1 for d in main.drops if d.delivered) if main else 0,
+        legs_total=len(main.drops) if main else 0,
     )
 
 
