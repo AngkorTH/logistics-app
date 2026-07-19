@@ -35,13 +35,24 @@ class TripFinance:
     payout_net: float        # ยอดจ่ายสุทธิ = fuel + toll + allowance_net − advance
 
 
-def _approved_sum(trip: Trip, kind: ReceiptKind) -> float:
-    """รวมยอดบิลชนิดหนึ่งจากทุกจุดส่ง เฉพาะที่ approved แล้ว"""
-    total = 0.0
+def trip_receipts(trip: Trip):
+    """บิลทั้งหมดของทริป = บิลรายจุดส่ง + บิลที่ผูกทริปตรงๆ (แจ้งเติมน้ำมันระหว่างทาง)"""
     for drop in trip.drops:
-        for r in drop.receipts:
-            if r.kind is kind and r.approved:
-                total += r.amount
+        yield from drop.receipts
+    yield from trip.trip_receipts
+
+
+def _approved_sum(trip: Trip, kind: ReceiptKind) -> float:
+    """รวมยอดบิลชนิดหนึ่งของทริป เฉพาะที่ approved แล้ว"""
+    total = sum(r.amount for r in trip_receipts(trip) if r.kind is kind and r.approved)
+    return round(total, 2)
+
+
+def total_liters(trip: Trip) -> float:
+    """ลิตรรวมที่เติมทั้งทริป — นับทุกบิลน้ำมันที่มีจำนวนลิตร (ไม่ต้องรออนุมัติยอดเงิน)"""
+    total = sum(
+        r.liters or 0.0 for r in trip_receipts(trip) if r.kind is ReceiptKind.FUEL
+    )
     return round(total, 2)
 
 

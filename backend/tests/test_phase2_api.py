@@ -11,6 +11,7 @@ from app.main import app
 from app.models import Drop, Role, Trip, User, Vehicle
 from app.models.enums import TripStatus
 from app.security import hash_password
+from tests.conftest import ODO_PHOTO
 
 
 def login(client, ident, pw="1234"):
@@ -43,17 +44,19 @@ def client():
 
 
 def _run_to_done(client, sv, drv, tid):
-    """จ่ายงาน → ตรวจรถ → เขียว → ส่งครบ (จบงานอัตโนมัติ รอล็อกการเงิน)"""
+    """จ่ายงาน → ตรวจรถ → เขียว → ส่งงานย่อยครบ → Supervisor กด 'จบเที่ยว' (รอล็อกการเงิน)"""
     assert client.post(f"/trips/{tid}/assign", json={}, headers=sv).status_code == 200
     r = client.post(f"/trips/{tid}/inspection",
-                    json={"items": {"tires": True}}, headers=drv)
+                    json={"items": {"tires": True},
+                          "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 200
     assert client.post(f"/trips/{tid}/finish-loading",
-                       json={"lat": 13.7, "lng": 100.5}, headers=drv).status_code == 200
+                       json={"lat": 13.7, "lng": 100.5, "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv).status_code == 200
     trip = client.get(f"/trips/{tid}", headers=sv).json()
     for d in trip["drops"]:
         assert client.post(f"/drops/{d['id']}/delivery",
                            json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
+    assert client.post(f"/trips/{tid}/complete", json={}, headers=sv).status_code == 200
 
 
 def test_assign_requires_bound_vehicle(client, seeded, db_session):

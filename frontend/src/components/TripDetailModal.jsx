@@ -2,10 +2,11 @@
 // กฎสำคัญ: หักเงินต้องมีเหตุผล · ปิดงาน = freeze ถาวร · 409 = เตือนให้ยืนยัน (force)
 import { useState } from 'react'
 import {
-  useTrip, usePenalty, useBonus, useCloseTrip, useRequestCorrection,
+  useTrip, usePenalty, useBonus, useCloseTrip, useCompleteTrip, useRequestCorrection,
 } from '../api/hooks'
 import { errMsg } from '../api/client'
 import { Btn, Field, ImageLightbox, Modal, PhotoThumb, StatusPill, inputCls, money } from './ui'
+import AddDropModal from './AddDropModal'
 import TripAdjustModal from './TripAdjustModal'
 import ReceiptAmountModal from './ReceiptAmountModal'
 import StatusOverrideModal from './StatusOverrideModal'
@@ -18,8 +19,10 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
   const penalty = usePenalty()
   const bonus = useBonus()
   const closeTrip = useCloseTrip()
+  const completeTrip = useCompleteTrip()
   const requestCorr = useRequestCorrection()
 
+  const [showAddDrop, setShowAddDrop] = useState(false)
   const [showAdjust, setShowAdjust] = useState(false)
   const [showStatus, setShowStatus] = useState(false)
   const [showUnfreeze, setShowUnfreeze] = useState(false)
@@ -33,6 +36,14 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
 
   if (!t) return null
   const fin = t.finance
+  // Dynamic Multi-Drop: เที่ยวหลักยัง Active จนกว่า Supervisor จะกด "จบเที่ยว" (completed_at)
+  const active = !t.completed_at && !t.frozen
+  // บิลเติมน้ำมันที่ผูกกับทริปตรงๆ (ไม่ผูกจุดส่ง) — คนขับกด "บันทึกเติมน้ำมัน" ระหว่างทาง
+  const fuelLogs = t.trip_receipts || []
+  // ลิตรรวมทั้งทริป = บิลเติมระหว่างทาง + บิลน้ำมันรายจุดที่กรอกลิตรไว้ (ตรงกับสูตรฝั่ง backend)
+  const fuelLiters =
+    fuelLogs.reduce((sm, r) => sm + (r.liters || 0), 0) +
+    t.drops.reduce((sm, d) => sm + d.receipts.reduce((s2, r) => s2 + (r.kind === 'FUEL' ? r.liters || 0 : 0), 0), 0)
 
   const run = async (fn, okMsg) => {
     setErr('')
@@ -55,6 +66,22 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
         try {
           await closeTrip.mutateAsync({ tripId: t.id, force: true })
           onDone?.(`🔒 ล็อกการเงิน ${t.code} (Override ส่งไม่ครบ) แล้ว`)
+        } catch (e2) { setErr(errMsg(e2)) }
+      } else if (e.response?.status !== 409) setErr(errMsg(e))
+    }
+  }
+
+  // จบเที่ยวหลัก: 409 = ยังส่งงานย่อยไม่ครบ → ยืนยันแล้วส่งซ้ำด้วย force
+  const doComplete = async () => {
+    setErr('')
+    try {
+      await completeTrip.mutateAsync({ tripId: t.id })
+      onDone?.(`🏁 จบเที่ยว ${t.code} แล้ว — รอตรวจบิล/ล็อกการเงิน`)
+    } catch (e) {
+      if (e.response?.status === 409 && window.confirm(errMsg(e))) {
+        try {
+          await completeTrip.mutateAsync({ tripId: t.id, force: true })
+          onDone?.(`🏁 จบเที่ยว ${t.code} (Override ส่งไม่ครบ) แล้ว`)
         } catch (e2) { setErr(errMsg(e2)) }
       } else if (e.response?.status !== 409) setErr(errMsg(e))
     }
@@ -85,6 +112,9 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
         )}
       </div>
 
+      {showAddDrop && (
+        <AddDropModal trip={t} onClose={() => setShowAddDrop(false)} onDone={onDone} />
+      )}
       {showAdjust && (
         <TripAdjustModal trip={t} onClose={() => setShowAdjust(false)} onDone={onDone} />
       )}
@@ -96,16 +126,54 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
       )}
       {receiptModal && (
         <ReceiptAmountModal receipt={receiptModal.receipt} mode={receiptModal.mode}
-          label={`จุด ${receiptModal.seq}`}
+          label={receiptModal.label || `จุด ${receiptModal.seq}`}
           onClose={() => setReceiptModal(null)} onDone={onDone} onErr={(m) => setErr(m)} />
       )}
 
-      {/* ---- จุดส่ง + หลักฐาน + บิล ---- */}
+      {/* ---- 🧭 เลขไมล์ตอนเริ่มงาน + รูปหน้าปัด (ให้แอดมินเทียบเลขที่คนขับพิมพ์กับรูปจริง) ---- */}
+      <div className="rounded-lg ring-1 ring-slate-200 p-3 mb-4 flex items-center gap-3">
+        <PhotoThumb src={t.odometer_start_photo} label="หน้าปัดไมล์ตอนเริ่มงาน" onZoom={setZoom} size="w-16 h-16" />
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-slate-700">🧭 เลขไมล์ตอนเริ่มงาน</div>
+          <div className="text-xl font-bold text-slate-800">
+            {t.odometer_start != null ? `${t.odometer_start.toLocaleString('th-TH')} กม.` : '—'}
+          </div>
+          <div className="text-[11px] text-slate-400">
+            {t.odometer_start_photo
+              ? 'คลิกรูปเพื่อขยาย — ตรวจว่าเลขบนหน้าปัดตรงกับเลขที่คนขับพิมพ์'
+              : 'ยังไม่มีรูปหน้าปัดไมล์ (ทริปเก่าก่อนมีระบบบังคับถ่ายรูป)'}
+          </div>
+        </div>
+        {t.odometer_end != null && (
+          <div className="ml-auto text-right">
+            <div className="text-[11px] text-slate-400">เลขไมล์จบ</div>
+            <div className="text-base font-bold text-slate-700">{t.odometer_end.toLocaleString('th-TH')} กม.</div>
+          </div>
+        )}
+      </div>
+
+      {/* ---- งานย่อย (Sub-Trips) + หลักฐาน + บิล ---- */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-sm font-medium text-slate-700">
+          📦 งานย่อย (Sub-Trips) · {t.drops.length} ใบ
+          {active
+            ? <span className="ml-2 text-[10px] font-semibold text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded">เที่ยวหลักยัง Active</span>
+            : <span className="ml-2 text-[10px] font-semibold text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">จบเที่ยวแล้ว</span>}
+        </div>
+        {active && t.drops.length < 5 && (
+          <Btn color="ghost" size="sm" onClick={() => setShowAddDrop(true)}>＋ เพิ่มงานย่อย</Btn>
+        )}
+      </div>
       <div className="space-y-3 mb-4">
         {t.drops.map((d) => (
           <div key={d.id} className="rounded-lg ring-1 ring-slate-200 p-3">
             <div className="flex items-center justify-between text-sm">
-              <div className="font-medium text-slate-700">{d.delivered ? '✅' : '⬜'} จุด {d.seq}: {d.name}</div>
+              <div className="font-medium text-slate-700">
+                {d.delivered ? '✅' : '⬜'} จุด {d.seq}:{' '}
+                <span className="text-slate-500">{d.origin || '—'}</span>
+                <span className="text-orange-500 mx-1">➜</span>
+                <span>{d.destination || d.name}</span>
+              </div>
               <div className="text-xs text-slate-400">เบี้ยเลี้ยง {money(d.allowance)}</div>
             </div>
             {/* Phase 4: รูปหลักฐานจริง — คลิกเพื่อขยายดูเต็มจอ */}
@@ -119,7 +187,11 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
               <div key={r.id} className={`mt-2 flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs ${r.approved ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
                 <span className="min-w-0 flex items-center gap-2">
                   <PhotoThumb src={r.photo} label={`${KIND_TH[r.kind]} จุด ${d.seq}`} onZoom={setZoom} size="w-9 h-9" />
-                  <span>{KIND_TH[r.kind]} {money(r.amount)} {r.date && `(${r.date})`} — {r.approved ? 'อนุมัติแล้ว' : '🤖 OCR Draft รอตรวจ'}</span>
+                  <span>
+                    {KIND_TH[r.kind]} {money(r.amount)}
+                    {r.liters > 0 && ` · ${r.liters.toFixed(2)} ลิตร`}
+                    {r.date && ` (${r.date})`} — {r.approved ? 'อนุมัติแล้ว' : '🤖 OCR Draft รอตรวจ'}
+                  </span>
                 </span>
                 {!t.frozen && (
                   <div className="flex gap-1.5 shrink-0">
@@ -139,6 +211,60 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
             ))}
           </div>
         ))}
+      </div>
+
+      {/* ---- ⛽ เติมน้ำมันระหว่างทาง + อัตราสิ้นเปลือง (Phase 5) ---- */}
+      <div className="rounded-lg ring-1 ring-slate-200 p-3 mb-4">
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-sm font-medium text-slate-700">⛽ การเติมน้ำมันระหว่างทาง</div>
+          <div className="text-xs text-slate-500">
+            ลิตรรวม <b className="text-slate-700">{fuelLiters.toFixed(2)} ลิตร</b>
+          </div>
+        </div>
+
+        {/* อัตราสิ้นเปลืองที่ระบบคำนวณตอนจบงาน (ระยะทาง ÷ ลิตรรวม) */}
+        <div className="rounded-md bg-blue-50 ring-1 ring-blue-200 px-3 py-2 mb-2 flex items-center justify-between">
+          <span className="text-xs text-blue-700">📊 อัตราสิ้นเปลือง (km/L)</span>
+          <span className="text-lg font-bold text-blue-700">
+            {t.km_per_liter != null ? `${t.km_per_liter} กม./ลิตร` : '—'}
+          </span>
+        </div>
+        <div className="text-[11px] text-slate-400 mb-2">
+          ระยะทาง {t.distance_km?.toLocaleString('th-TH') || 0} กม.
+          {t.odometer_start != null && t.odometer_end != null
+            ? ` (ไมล์ ${t.odometer_start.toLocaleString('th-TH')} → ${t.odometer_end.toLocaleString('th-TH')})`
+            : ''}
+          {t.km_per_liter == null && ' · ยังคิด km/L ไม่ได้ — ต้องมีจำนวนลิตรและเลขไมล์จบก่อน'}
+        </div>
+
+        {fuelLogs.length === 0 ? (
+          <div className="text-[11px] text-slate-300">คนขับยังไม่ได้แจ้งเติมน้ำมันในทริปนี้</div>
+        ) : (
+          fuelLogs.map((r) => (
+            <div key={r.id} className={`mt-2 flex items-center justify-between gap-2 rounded-md px-2.5 py-1.5 text-xs ${r.approved ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+              <span className="min-w-0 flex items-center gap-2">
+                {/* รูปสลิปน้ำมันที่คนขับส่งมา — คลิกขยายเต็มจอ */}
+                <PhotoThumb src={r.photo} label="สลิปน้ำมัน" onZoom={setZoom} size="w-9 h-9" />
+                <span>
+                  <b>{(r.liters || 0).toFixed(2)} ลิตร</b> · {money(r.amount)}
+                  {r.date && ` (${r.date})`} — {r.approved ? 'อนุมัติแล้ว' : '🤖 OCR Draft รอตรวจ'}
+                </span>
+              </span>
+              {!t.frozen && (
+                <div className="flex gap-1.5 shrink-0">
+                  {!r.approved && (
+                    <Btn size="sm" color="green" onClick={() => setReceiptModal({ receipt: r, mode: 'approve', label: '⛽ เติมระหว่างทาง' })}>
+                      ยืนยันยอด
+                    </Btn>
+                  )}
+                  <Btn size="sm" color="ghost" onClick={() => setReceiptModal({ receipt: r, mode: 'edit', label: '⛽ เติมระหว่างทาง' })}>
+                    ✏️ แก้ยอด
+                  </Btn>
+                </div>
+              )}
+            </div>
+          ))
+        )}
       </div>
 
       {/* ---- สรุปการเงิน ---- */}
@@ -219,8 +345,14 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
 
       <div className="flex gap-2">
         <Btn color="outline" className="flex-1" onClick={onClose}>ปิดหน้าต่าง</Btn>
-        {/* ล็อกการเงิน: ทริปที่กำลังส่ง (GREEN) หรือจบงานแล้ว (closed_at) และยังไม่ล็อก */}
-        {!t.frozen && (t.status === 'GREEN' || t.closed_at) && (
+        {/* จบเที่ยวหลัก — เที่ยวจบสมบูรณ์ได้ก็ต่อเมื่อ Supervisor กดปุ่มนี้เท่านั้น */}
+        {active && (
+          <Btn color="green" className="flex-1" disabled={completeTrip.isPending} onClick={doComplete}>
+            🏁 จบเที่ยว (Complete)
+          </Btn>
+        )}
+        {/* ล็อกการเงิน: ทำได้หลังจบเที่ยวแล้ว (หรือทริปเก่าที่มี closed_at) และยังไม่ล็อก */}
+        {!t.frozen && (t.completed_at || t.closed_at) && (
           <Btn color="slate" className="flex-1" disabled={closeTrip.isPending} onClick={doClose}>
             🔒 ล็อกการเงิน (ปิดบัญชี)
           </Btn>

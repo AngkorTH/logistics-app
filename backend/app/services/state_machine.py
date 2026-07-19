@@ -198,6 +198,53 @@ def assign_trip(
     return trip
 
 
+def _last_odometer_end(db: Session, trip: Trip) -> float | None:
+    """เลขไมล์จบล่าสุดของคนขับคนนี้ (ทริปอื่นที่ปิดงานแล้วและมีเลขไมล์จบ)"""
+    prev = (
+        db.query(Trip)
+        .filter(
+            Trip.driver_id == trip.driver_id,
+            Trip.id != trip.id,
+            Trip.odometer_end.isnot(None),
+        )
+        .order_by(Trip.odometer_end.desc())
+        .first()
+    )
+    return prev.odometer_end if prev else None
+
+
+def _validate_odometer_start(
+    db: Session, trip: Trip, odometer_start: float | None, photo_b64: str | None
+) -> tuple[float, str]:
+    """ด่านบังคับก่อนเริ่มงาน: ต้องมีเลขไมล์ + รูปหน้าปัดไมล์ และเลขต้องสมเหตุสมผล
+
+    คืน (เลขไมล์ที่ปัดแล้ว, URL รูปที่บันทึก) · ผิดเงื่อนไขข้อใดข้อหนึ่ง = TransitionError
+    """
+    from app.services.storage import StorageError, save_photo_b64
+
+    if odometer_start is None:
+        raise TransitionError("ต้องกรอกเลขไมล์ตอนเริ่มงานก่อนจึงจะเริ่มงานได้")
+    if odometer_start < 0:
+        raise TransitionError("เลขไมล์ตอนเริ่มงานติดลบไม่ได้")
+    if not photo_b64 or not photo_b64.strip():
+        raise TransitionError("ต้องถ่ายรูปหน้าปัดไมล์แนบมาด้วยก่อนเริ่มงาน")
+
+    last = _last_odometer_end(db, trip)
+    if last is not None and odometer_start < last:
+        raise TransitionError(
+            f"เลขไมล์เริ่ม ({odometer_start:.1f}) น้อยกว่าเลขไมล์จบของเที่ยวก่อนหน้า "
+            f"({last:.1f}) — ตรวจสอบเลขบนหน้าปัดอีกครั้ง"
+        )
+
+    try:
+        path = save_photo_b64(photo_b64, "odo")
+    except StorageError as e:
+        raise TransitionError(f"รูปหน้าปัดไมล์ใช้ไม่ได้: {e}")
+    if not path:
+        raise TransitionError("ต้องถ่ายรูปหน้าปัดไมล์แนบมาด้วยก่อนเริ่มงาน")
+    return round(float(odometer_start), 1), path
+
+
 # ---------------------------------------------------------------------------
 # ORANGE → GREEN : Driver กด "ขนของขึ้นเสร็จ" + GPS ต้นทาง
 # ---------------------------------------------------------------------------
@@ -208,6 +255,10 @@ def finish_loading(
     lat: float,
     lng: float,
     *,
+    # เลขไมล์เริ่ม + รูปหน้าปัดปกติถูกบันทึกไปแล้วตอน "ส่งผลตรวจสภาพรถ"
+    # ส่งซ้ำตรงนี้ได้ (เช่นข้อมูลเก่า/แก้ไข) — ไม่ส่ง = ใช้ค่าที่บันทึกไว้ในทริป
+    odometer_start: float | None = None,
+    odometer_photo_b64: str | None = None,
     force: bool = False,
     captured_at: datetime | None = None,  # เวลากดจริง (Offline Auto-Sync) — None = ตอนนี้
 ) -> Trip:
@@ -216,6 +267,8 @@ def finish_loading(
     - Soft-block ผ้าใบ: ไม่เช็ครูปผ้าใบเลย ปล่อยให้ไป GREEN ได้เสมอ
     - Idempotency: กดซ้ำ (already GREEN) จะไม่สร้าง GPS log ซ้ำ
     - การ์ดลำดับ: ปกติต้องมาจาก ORANGE ถ้าไม่ใช่ (เช่นยังไม่ถูกจ่ายงาน) → เตือนให้ยืนยัน
+    - **Hard-block เลขไมล์:** ต้องส่งทั้งเลขไมล์เริ่ม + รูปหน้าปัดไมล์ และเลขต้องไม่น้อยกว่า
+      เลขไมล์จบของเที่ยวก่อนหน้าของคนขับคนนี้ (ข้อมูลผิดแน่นอน = ห้ามเริ่มงาน)
     """
     # กันกดซ้ำ (double-tap) — ถ้าเป็น GREEN อยู่แล้วและ stamp ต้นทางไปแล้ว คืนค่าเดิม
     if trip.status is TripStatus.GREEN and trip.finished_loading_at is not None:
@@ -234,6 +287,18 @@ def finish_loading(
             "จึงจะกด 'ขนของขึ้นเสร็จ' ได้"
         )
 
+    # ---- ด่านเลขไมล์เริ่มงาน (Odometer Start Tracking) — hard-block ทุกกรณี ----
+    if odometer_start is None and odometer_photo_b64 is None:
+        # ใช้ค่าที่บันทึกตอนส่งผลตรวจสภาพรถ — ถ้ายังไม่มีแปลว่ายังไม่ผ่านด่านนั้น
+        if trip.odometer_start is None or not trip.odometer_start_photo:
+            raise TransitionError(
+                "ยังไม่มีเลขไมล์เริ่ม/รูปหน้าปัดไมล์ของทริปนี้ — "
+                "ต้องกรอกตอนส่งผลตรวจสภาพรถก่อนวิ่งก่อน"
+            )
+        odo, photo_path = trip.odometer_start, trip.odometer_start_photo
+    else:
+        odo, photo_path = _validate_odometer_start(db, trip, odometer_start, odometer_photo_b64)
+
     if trip.status is not TripStatus.ORANGE and not force:
         raise TransitionWarning(
             f"ทริป {trip.code} ยังไม่อยู่สถานะ 'ขึ้นของ' (ปัจจุบัน {trip.status.value}) "
@@ -241,6 +306,8 @@ def finish_loading(
         )
 
     skipped = trip.status is not TripStatus.ORANGE
+    trip.odometer_start = odo
+    trip.odometer_start_photo = photo_path
     trip.status = TripStatus.GREEN
     trip.finished_loading_at = captured_at or _now()
     if skipped:
@@ -256,7 +323,8 @@ def finish_loading(
 
     write_audit(
         db, who_label(driver), "ขนของขึ้นเสร็จ", trip.code,
-        f"→ GREEN · GPS ต้นทาง {lat:.5f},{lng:.5f}" + (" · ข้ามลำดับ (override)" if skipped else ""),
+        f"→ GREEN · GPS ต้นทาง {lat:.5f},{lng:.5f} · เลขไมล์เริ่ม {trip.odometer_start:.1f} (แนบรูปหน้าปัด)"
+        + (" · ข้ามลำดับ (override)" if skipped else ""),
     )
     _notify_tarpaulin(driver, "สถานะเป็นสีเขียว")
     return trip
@@ -273,11 +341,21 @@ def record_delivery(
 ) -> Drop:
     """คนขับส่งของสำเร็จ 1 จุด: ทำเครื่องหมายส่งแล้ว + รูป + geo-stamp ปลายทาง (DELIVERED)
 
-    ทริปยังคงสถานะ GREEN ตลอดทุกจุดส่ง (Multi-Drop) — การปิดงานเป็นหน้าที่ Supervisor
+    Dynamic Multi-Drop: จบงานย่อย = คนขับกลับเป็น **รองาน (WHITE) ทันที** เพื่อรับงานย่อยใบถัดไป
+    ได้เลย แต่ **เที่ยวหลักยัง Active** (completed_at ยังว่าง) — จบเที่ยวจริงต้องให้ Supervisor
+    กด "จบเที่ยว" (complete_trip) เท่านั้น
     Idempotency: ถ้าจุดนี้ delivered ไปแล้ว ไม่สร้าง GPS log ซ้ำ
     """
     trip = drop.trip
-    if trip.status is not TripStatus.GREEN:
+    # ส่งของได้เมื่อกำลังวิ่ง (GREEN) — หรือกลับเป็น WHITE เพราะเพิ่งจบงานย่อยใบก่อน
+    # แต่ของเที่ยวนี้ยังอยู่บนรถ (ขึ้นของแล้ว + เที่ยวหลักยัง Active)
+    on_the_road = (
+        trip.status is TripStatus.WHITE
+        and trip.finished_loading_at is not None
+        and trip.completed_at is None
+        and not trip.frozen
+    )
+    if trip.status is not TripStatus.GREEN and not on_the_road:
         raise TransitionError(
             f"ยังส่งของจุด {drop.seq} ไม่ได้ — ทริปต้องอยู่สถานะ GREEN (ปัจจุบัน {trip.status.value})"
         )
@@ -294,6 +372,8 @@ def record_delivery(
     drop.photo = save_photo_b64(photo_b64, "dlv") or "attached"
     drop.gps = coord
     drop.delivered_at = captured_at or _now()
+    # จบงานย่อย → คนขับว่างทันที (รองาน/สีขาว) · เที่ยวหลักไม่ถูกปิด
+    trip.status = TripStatus.WHITE
 
     db.add(GpsLog(
         trip_id=trip.id, drop_id=drop.id, event=GpsEvent.DELIVERED, lat=lat, lng=lng,
@@ -303,31 +383,172 @@ def record_delivery(
     db.refresh(drop)
 
     write_audit(
-        db, who_label(driver), "ส่งของสำเร็จ", trip.code,
-        f"จุด {drop.seq} ({drop.name}) · GPS ปลายทาง {coord}",
+        db, who_label(driver), "จบงานย่อย (ส่งของสำเร็จ)", trip.code,
+        f"จุด {drop.seq} ({drop.origin or '—'} → {drop.destination or drop.name}) · "
+        f"GPS ปลายทาง {coord} · คนขับ → รองาน (เที่ยวหลักยัง Active)",
     )
 
-    # จบงานอัตโนมัติ: ถ้าส่งครบทุกจุดแล้ว → กลับ WHITE (รองาน) ทันที ไม่ต้องรอคนคุมกดปิด
-    # (ยังไม่ freeze การเงิน — เปิดให้คนคุมย้อนมาตรวจ/อนุมัติบิลทีหลัง แล้วค่อยกดล็อกการเงิน)
+    # ส่งครบทุกงานย่อยแล้ว → แจ้งคนคุมงานให้มากด "จบเที่ยว" (ระบบไม่จบให้เอง)
     if trip.drops and all(d.delivered for d in trip.drops):
-        _auto_complete(db, trip, driver)
+        push_notification(
+            db, "TRIP_DONE", f"ทริป {trip.code} ส่งครบทุกงานย่อยแล้ว",
+            "คนขับส่งของครบทุกจุด · รอคนคุมงานกด 'จบเที่ยว'", trip.id,
+        )
     return drop
 
 
-def _auto_complete(db: Session, trip: Trip, driver: User) -> None:
-    """คนขับส่งครบทุกจุด → จบงานอัตโนมัติ (WHITE + closed_at) + แจ้งเตือนทีมคุมงาน"""
+# ---------------------------------------------------------------------------
+# จบเที่ยวหลัก (Complete Main Trip) : Supervisor เท่านั้น
+# ---------------------------------------------------------------------------
+def complete_trip(db: Session, trip: Trip, actor: User, *, force: bool = False) -> Trip:
+    """Supervisor กด "จบเที่ยว" → เที่ยวหลักจบสมบูรณ์ (คำนวณเงิน/รอล็อกการเงิน)
+
+    ก่อนหน้านี้เที่ยวหลักยัง Active ได้เรื่อยๆ แม้คนขับจะจบงานย่อยไปแล้วหลายใบ
+    การ์ด:
+    - จบเที่ยวไปแล้ว / freeze แล้ว → hard-block
+    - ยังส่งงานย่อยไม่ครบ → เตือนให้ยืนยัน (warn-don't-block)
+    """
+    if trip.frozen:
+        raise TransitionError(f"ทริป {trip.code} ถูกล็อกการเงินแล้ว")
+    if trip.completed_at is not None:
+        raise TransitionError(f"ทริป {trip.code} จบเที่ยวไปแล้ว")
+
+    _assert_not_paused(trip)
+
+    if not trip.drops:
+        raise TransitionError(f"ทริป {trip.code} ยังไม่มีงานย่อย — จบเที่ยวไม่ได้")
+
+    undelivered = [d.seq for d in trip.drops if not d.delivered]
+    if undelivered and not force:
+        raise TransitionWarning(
+            f"ยังส่งงานย่อยไม่ครบ (เหลือจุด {undelivered}) — ยืนยันจบเที่ยวหรือไม่?"
+        )
+
     trip.status = TripStatus.WHITE
-    trip.closed_at = _now()
+    trip.completed_at = _now()
+    trip.closed_at = trip.closed_at or trip.completed_at
+    trip.km_per_liter = compute_km_per_liter(trip)
+    if undelivered:
+        trip.override = True
     db.commit()
     db.refresh(trip)
+
     write_audit(
-        db, who_label(driver), "จบงานอัตโนมัติ", trip.code,
-        "คนขับส่งของครบทุกจุด → รองาน (รอคนคุมงานตรวจบิล/ล็อกการเงิน)",
+        db, who_label(actor), "จบเที่ยว (Complete Main Trip)", trip.code,
+        f"งานย่อย {len(trip.drops)} ใบ → จบเที่ยว (รอตรวจบิล/ล็อกการเงิน)"
+        + (f" · override ยังส่งไม่ครบจุด {undelivered}" if undelivered else ""),
     )
     push_notification(
-        db, "TRIP_DONE", f"ทริป {trip.code} จบงานแล้ว",
-        "คนขับส่งของครบทุกจุด · รอตรวจบิลและล็อกการเงิน", trip.id,
+        db, "TRIP_DONE", f"ทริป {trip.code} จบเที่ยวแล้ว",
+        f"{who_label(actor)} กดจบเที่ยว · รอตรวจบิลและล็อกการเงิน", trip.id,
     )
+    return trip
+
+
+def add_drop(
+    db: Session, trip: Trip, actor: User, *,
+    origin: str, destination: str, name: str = "", allowance: float = 0,
+) -> Drop:
+    """เพิ่มงานย่อย (Sub-Trip) เข้าไปในทริปเดิมที่ยัง Active — ต้นทาง/ปลายทางบังคับ"""
+    if trip.frozen:
+        raise TransitionError(f"ทริป {trip.code} ถูกล็อกการเงินแล้ว — เพิ่มงานย่อยไม่ได้")
+    if trip.completed_at is not None:
+        raise TransitionError(f"ทริป {trip.code} จบเที่ยวไปแล้ว — เพิ่มงานย่อยไม่ได้")
+    if not origin.strip() or not destination.strip():
+        raise TransitionError("ต้องกรอกทั้งต้นทาง (เริ่มจากไหน) และปลายทาง (ไปส่งที่ไหน)")
+    if len(trip.drops) >= 5:
+        raise TransitionError("1 เที่ยวมีงานย่อยได้สูงสุด 5 ใบ")
+
+    drop = Drop(
+        trip_id=trip.id,
+        seq=max((d.seq for d in trip.drops), default=0) + 1,
+        name=name.strip() or f"{origin.strip()} → {destination.strip()}",
+        origin=origin.strip(),
+        destination=destination.strip(),
+        allowance=allowance,
+    )
+    db.add(drop)
+    db.commit()
+    db.refresh(drop)
+    db.refresh(trip)
+
+    write_audit(
+        db, who_label(actor), "เพิ่มงานย่อย (Sub-Trip)", trip.code,
+        f"จุด {drop.seq}: {drop.origin} → {drop.destination} · เบี้ยเลี้ยง {drop.allowance:.2f}",
+    )
+    return drop
+
+
+# ---------------------------------------------------------------------------
+# จบงาน (End Trip) : คนขับส่งเลขไมล์จบ → คิดอัตราสิ้นเปลือง km/L
+# ---------------------------------------------------------------------------
+def compute_km_per_liter(trip: Trip) -> float | None:
+    """คิดอัตราสิ้นเปลืองของทริป — ปัดทศนิยม 1 ตำแหน่ง
+
+    ระยะทาง = odometer_end − odometer_start (ถ้าไม่มีเลขไมล์ ใช้ distance_km ที่บันทึกไว้)
+    ลิตรรวม = ผลรวม liters ของบิลน้ำมันทุกใบในทริป
+    ลิตรรวม = 0 → คืน None (กันหารด้วยศูนย์)
+    """
+    from app.services.finance import total_liters
+
+    liters = total_liters(trip)
+    if liters <= 0:
+        return None
+
+    if trip.odometer_end is not None and trip.odometer_start is not None:
+        distance = trip.odometer_end - trip.odometer_start
+    else:
+        distance = trip.distance_km or 0.0
+    if distance <= 0:
+        return None
+    return round(distance / liters, 1)
+
+
+def end_trip(
+    db: Session, trip: Trip, actor: User, odometer_end: float, *, force: bool = False
+) -> Trip:
+    """จบงาน: บันทึกเลขไมล์จบ → คิดระยะทาง + km/L แล้วเก็บลงทริป
+
+    การ์ด:
+    - freeze แล้ว → ห้ามแก้เลขไมล์ (ต้องขอปลดล็อกก่อน)
+    - เลขไมล์จบ < เลขไมล์เริ่ม → hard-block (ข้อมูลผิดแน่นอน)
+    - ยังส่งของไม่ครบทุกจุด → เตือนให้ยืนยัน (warn-don't-block)
+    """
+    if trip.frozen:
+        raise TransitionError(f"ทริป {trip.code} ถูกล็อกการเงินแล้ว — แก้เลขไมล์ไม่ได้ ต้องขอปลดล็อกก่อน")
+    if odometer_end is None or odometer_end < 0:
+        raise TransitionError("เลขไมล์จบต้องเป็นตัวเลขไม่ติดลบ")
+    if trip.odometer_start is not None and odometer_end < trip.odometer_start:
+        raise TransitionError(
+            f"เลขไมล์จบ ({odometer_end:.1f}) น้อยกว่าเลขไมล์เริ่ม ({trip.odometer_start:.1f})"
+        )
+
+    undelivered = [d.seq for d in trip.drops if not d.delivered]
+    if undelivered and not force:
+        raise TransitionWarning(
+            f"ยังส่งของไม่ครบ (เหลือจุด {undelivered}) — ยืนยันจบงานหรือไม่?"
+        )
+
+    trip.odometer_end = round(float(odometer_end), 1)
+    if trip.odometer_start is not None:
+        trip.distance_km = round(trip.odometer_end - trip.odometer_start, 2)
+    trip.km_per_liter = compute_km_per_liter(trip)
+    trip.status = TripStatus.WHITE
+    trip.closed_at = trip.closed_at or _now()
+    if undelivered:
+        trip.override = True
+    db.commit()
+    db.refresh(trip)
+
+    from app.services.finance import total_liters
+
+    write_audit(
+        db, who_label(actor), "จบงาน (เลขไมล์จบ)", trip.code,
+        f"ไมล์จบ {trip.odometer_end:.1f} · ระยะทาง {trip.distance_km:.2f} กม. · "
+        f"น้ำมันรวม {total_liters(trip):.2f} ลิตร · "
+        + (f"{trip.km_per_liter} กม./ลิตร" if trip.km_per_liter is not None else "คิด กม./ลิตร ไม่ได้ (ไม่มีข้อมูลลิตร)"),
+    )
+    return trip
 
 
 # ---------------------------------------------------------------------------
@@ -351,10 +572,12 @@ def close_trip(
 
     _assert_not_paused(trip)  # มีเหตุ SOS ค้าง → ปิดเหตุก่อนจึงล็อกการเงินได้
 
-    completed = trip.closed_at is not None
-    if trip.status is not TripStatus.GREEN and not completed:
+    # ต้อง "จบเที่ยว" (Supervisor) หรือจบงานด้วยเลขไมล์จบก่อน จึงจะล็อกการเงินได้
+    completed = trip.completed_at is not None or trip.closed_at is not None
+    if not completed:
         raise TransitionError(
-            f"ล็อกการเงินไม่ได้ — ทริป {trip.code} ต้องส่งของเสร็จก่อน (ปัจจุบัน {trip.status.value})"
+            f"ล็อกการเงินไม่ได้ — ต้องกด 'จบเที่ยว' ของทริป {trip.code} ก่อน "
+            f"(ปัจจุบัน {trip.status.value} · เที่ยวหลักยัง Active)"
         )
 
     missing = [d.seq for d in trip.drops if not d.photo]
@@ -377,6 +600,8 @@ def close_trip(
 
     trip.status = TripStatus.WHITE
     trip.closed_at = trip.closed_at or _now()
+    # คิด km/L ซ้ำตอนล็อก เผื่อมีบิลน้ำมันเข้ามาหลังกดจบงาน
+    trip.km_per_liter = compute_km_per_liter(trip)
     trip.frozen = True
     trip.frozen_fuel = snapshot.fuel_total
     trip.frozen_toll = snapshot.toll_total

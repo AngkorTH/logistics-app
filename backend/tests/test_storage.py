@@ -8,7 +8,7 @@ from app.models.enums import ReceiptKind, Role
 from app.services.evidence import upload_receipt, upload_tarp
 from app.services.state_machine import assign_trip, finish_loading, record_delivery
 from app.services.storage import UPLOAD_DIR, StorageError, save_photo_b64
-from tests.conftest import pass_inspection
+from tests.conftest import ODO_PHOTO, pass_inspection
 
 TINY_PNG = ("data:image/png;base64,"
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
@@ -38,7 +38,7 @@ def _green_trip(db, driver, supervisor):
     db.refresh(trip)
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
     return trip
 
 

@@ -14,10 +14,11 @@ from app.services.correction import (
     request_correction,
 )
 from app.services.evidence import approve_receipt, upload_receipt
-from tests.conftest import pass_inspection
+from tests.conftest import ODO_PHOTO, pass_inspection
 from app.services.state_machine import (
     assign_trip,
     close_trip,
+    complete_trip,
     finish_loading,
     record_delivery,
 )
@@ -38,7 +39,7 @@ def _mk_trip(db, driver, n_drops=2):
 def _run_to_green(db, trip, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
 
 
 @pytest.fixture()
@@ -79,6 +80,7 @@ def test_close_freezes_and_snapshots_amounts(db_session, driver, supervisor):
 
     for d in trip.drops:
         record_delivery(db_session, d, driver, 13.8, 100.6)
+    complete_trip(db_session, trip, supervisor)   # Supervisor กดจบเที่ยวก่อน
     close_trip(db_session, trip, supervisor)
 
     assert trip.frozen is True

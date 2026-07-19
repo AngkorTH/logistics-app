@@ -51,6 +51,7 @@ def upload_receipt_ep(
             db, drop, user, body.kind,
             ocr_amount=body.ocr_amount, ocr_date=body.ocr_date,
             captured_at=body.captured_at, photo_b64=body.photo_b64,
+            liters=body.liters,
         )
     except (EvidenceError, StorageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))

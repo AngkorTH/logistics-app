@@ -6,10 +6,11 @@ import { useState } from 'react'
 import {
   useTrips, useFinishLoading, useUploadReceipt, useUploadTarp, useRecordDelivery,
   useInspection, useSubmitInspection, useAdvances, useRequestAdvance, useSos, useReportIssue,
+  useLogFuel, useEndTrip,
 } from '../api/hooks'
 import { errMsg } from '../api/client'
 import { ImageLightbox, PhotoThumb, STATUS, StatusPill, money } from '../components/ui'
-import { AdvanceSheet, InspectionCard, PhotoConfirmSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
+import { AdvanceSheet, EndTripSheet, InspectionCard, PhotoConfirmSheet, RefuelSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
 import { pickImage } from '../utils/image'
 import { useOffline } from '../offline/useOffline'
 
@@ -39,14 +40,18 @@ export default function DriverHome() {
   const requestAdvance = useRequestAdvance()
   const sos = useSos()
   const reportIssue = useReportIssue()
+  const logFuel = useLogFuel()
+  const endTrip = useEndTrip()
   const { data: advances } = useAdvances()
 
   const [toast, setToast] = useState(null)
   const [busyKey, setBusyKey] = useState(null)   // กันกดปุ่มซ้ำระหว่างรอ API
-  const [sheet, setSheet] = useState(null)        // 'sos' | 'advance' | 'issue' | null
+  const [sheet, setSheet] = useState(null)        // 'sos' | 'advance' | 'issue' | 'refuel' | null
   const [reinspect, setReinspect] = useState(false) // ขอเปิดฟอร์มตรวจใหม่หลัง REJECTED
   const [photoDraft, setPhotoDraft] = useState(null)  // Phase 4: รูปที่ถ่ายรอยืนยันก่อนส่ง
   const [zoom, setZoom] = useState(null)              // Phase 4: ขยายดูรูปเต็มจอ
+  // ทริปที่รอกรอก "เลขไมล์จบ" — เก็บแยกจาก active เพราะทริปพลิกเป็น WHITE ทันทีที่ส่งครบทุกจุด
+  const [endTarget, setEndTarget] = useState(null)    // { id, code, odometer_start } | null
 
   // Offline Auto-Sync (Phase 3B): สถานะเน็ต + คิวค้างส่ง
   const { online, pending } = useOffline()
@@ -117,6 +122,32 @@ export default function DriverHome() {
               setSheet(null)
             }, '🔧 แจ้งเหตุแล้ว! รถถูกตั้งเป็น "กำลังซ่อม" — คนคุมงานได้รับแจ้งเตือน')} />
       )}
+      {sheet === 'refuel' && active && (
+        <RefuelSheet busy={busyKey === 'refuel'} onClose={() => setSheet(null)}
+          onSubmit={({ liters, photo_b64 }) =>
+            run('refuel', async () => {
+              await logFuel.mutateAsync({
+                tripId: active.id, liters, photo_b64, ocr_amount: mockOcr('FUEL'),
+              })
+              setSheet(null)
+            }, `⛽ บันทึกเติมน้ำมัน ${liters} ลิตรแล้ว — รอคนคุมงานยืนยันยอดเงิน`)} />
+      )}
+      {endTarget && (
+        <EndTripSheet busy={busyKey === 'end'} odometerStart={endTarget.odometer_start}
+          onClose={() => setEndTarget(null)}
+          onSubmit={({ odometer_end }) =>
+            run('end', async () => {
+              try {
+                await endTrip.mutateAsync({ tripId: endTarget.id, odometer_end })
+              } catch (e) {
+                // 409 = ยังส่งของไม่ครบ (warn-don't-block) → ยืนยันแล้วส่งซ้ำด้วย force
+                if (e.response?.status === 409 && window.confirm(errMsg(e))) {
+                  await endTrip.mutateAsync({ tripId: endTarget.id, odometer_end, force: true })
+                } else throw e
+              }
+              setEndTarget(null)
+            }, '🏁 จบงานแล้ว — ระบบคำนวณระยะทางและอัตราสิ้นเปลืองให้เรียบร้อย')} />
+      )}
       <PhotoConfirmSheet draft={photoDraft} busy={busyKey === 'photo'} onClose={() => setPhotoDraft(null)} />
       <ImageLightbox image={zoom} onClose={() => setZoom(null)} />
       <ToastView toast={toast} />
@@ -136,6 +167,13 @@ export default function DriverHome() {
   // ปุ่มเบิกเงิน (ทุกสถานะ) + SOS (เฉพาะตอนมีทริปวิ่ง) + แจ้งเหตุรถมีปัญหา (เฉพาะตอนรองาน/ขาว)
   const actionRow = (
     <div className="grid gap-2 grid-cols-2">
+      {/* ⛽ บันทึกเติมน้ำมัน — เฉพาะช่วงกำลังวิ่งงาน (🟠/🟢) · ล็อกเมื่อทริปถูกพักจาก SOS */}
+      {active && (
+        <button onClick={() => setSheet('refuel')} disabled={active.paused}
+          className="col-span-2 py-3.5 rounded-xl bg-white ring-1 ring-slate-300 text-slate-700 text-base font-bold active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+          ⛽ บันทึกเติมน้ำมัน
+        </button>
+      )}
       <button onClick={() => setSheet('advance')}
         className="py-3.5 rounded-xl bg-white ring-1 ring-blue-300 text-blue-600 text-base font-bold active:scale-[0.98] transition">
         💵 ขอเบิกเงินล่วงหน้า
@@ -191,10 +229,10 @@ export default function DriverHome() {
         <TripHeader trip={active} s={s} allowanceTotal={allowanceTotal} />
         {pausedBanner}
         <div className="bg-orange-50 ring-1 ring-orange-200 rounded-2xl p-5 text-center">
-          <div className="text-sm text-orange-700 font-medium mb-1">📦 จุดหมายปลายทาง ({active.drops.length} จุด)</div>
+          <div className="text-sm text-orange-700 font-medium mb-1">📦 งานย่อยของเที่ยวนี้ ({active.drops.length} ใบ)</div>
           {active.drops.map((d) => (
             <div key={d.id} className="text-base font-semibold text-slate-700 py-0.5">
-              {d.seq}. {d.name}
+              {d.seq}. {d.origin || '—'} <span className="text-orange-500">➜</span> {d.destination || d.name}
             </div>
           ))}
           <div className="text-xs text-orange-500 mt-2">🔔 อย่าลืมเตรียมคลุมผ้าใบก่อนออกรถ!</div>
@@ -203,12 +241,15 @@ export default function DriverHome() {
         {/* ---- ด่านตรวจสภาพรถ (ข้อ 1.2) ---- */}
         {showForm && (
           <InspectionCard busy={busyKey === 'inspect'}
-            onSubmit={({ items, defect_note, defect_photo_b64 }) =>
+            onSubmit={({ items, defect_note, defect_photo_b64, odometer_start, odometer_photo_b64 }) =>
               run('inspect', async () => {
-                const res = await submitInspection.mutateAsync({ tripId: active.id, items, defect_note, defect_photo_b64 })
+                const res = await submitInspection.mutateAsync({
+                  tripId: active.id, items, defect_note, defect_photo_b64,
+                  odometer_start, odometer_photo_b64,
+                })
                 setReinspect(false)
                 notify(res.data?.status === 'PASSED' || Object.values(items).every(Boolean)
-                  ? '✅ ตรวจสภาพรถผ่านทุกข้อ — เริ่มงานได้เลย!'
+                  ? `✅ ตรวจรถผ่าน + บันทึกเลขไมล์ ${odometer_start.toLocaleString('th-TH')} กม. — เริ่มงานได้เลย!`
                   : '📨 ส่งจุดชำรุดให้คนคุมงานประเมินแล้ว — รอผลอนุมัติ')
               })} />
         )}
@@ -238,9 +279,10 @@ export default function DriverHome() {
         <button
           disabled={busyKey === 'load' || !inspectionOk || active.paused || isQueued(`/trips/${active.id}/finish-loading`)}
           onClick={async () => {
+            // เลขไมล์เริ่ม + รูปหน้าปัดถูกบันทึกไปแล้วตอนส่งผลตรวจสภาพรถ — ที่นี่เหลือแค่ GPS ต้นทาง
             const gps = await getGps()
             run('load', () => finishLoading.mutateAsync({ tripId: active.id, ...gps }),
-              `📍 บันทึก GPS ต้นทางแล้ว → สถานะ 🟢 กำลังไปส่ง`)
+              '📍 บันทึก GPS ต้นทางแล้ว → สถานะ 🟢 กำลังไปส่ง')
           }}
           className="w-full py-5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] transition text-white text-xl font-bold shadow-lg disabled:opacity-40 disabled:cursor-not-allowed">
           {busyKey === 'load' ? '⏳ กำลังบันทึก…'
@@ -252,7 +294,9 @@ export default function DriverHome() {
             ⚠️ กรุณาตรวจสภาพรถให้ผ่านก่อนเริ่มงาน
           </div>
         )}
-        <div className="text-center text-[11px] text-slate-400">กดแล้วระบบจะบันทึกพิกัด GPS ต้นทางอัตโนมัติ</div>
+        <div className="text-center text-[11px] text-slate-400">
+          เลขไมล์เริ่มถูกบันทึกตอนส่งผลตรวจสภาพรถแล้ว · กดแล้วระบบบันทึกพิกัด GPS ต้นทางอัตโนมัติ
+        </div>
         {actionRow}
         {sheets}
       </div>
@@ -269,8 +313,8 @@ export default function DriverHome() {
       {pausedBanner}
       <div className="text-sm font-semibold text-emerald-700 text-center">
         {remaining > 0
-          ? `เหลืออีก ${remaining} จุด — ส่งรูป "ส่งของสำเร็จ" ให้ครบทุกจุด แล้วงานจะปิดอัตโนมัติ`
-          : 'ส่งครบทุกจุดแล้ว ✅ งานปิดอัตโนมัติ — กลับสู่สถานะรองาน'}
+          ? `เหลืออีก ${remaining} งานย่อย — ส่งรูป "ส่งของสำเร็จ" แล้วจะกลับเป็น "รองาน" ทันที`
+          : 'ส่งครบทุกงานย่อยแล้ว ✅ กลับสู่สถานะรองาน — รอคนคุมงานกด "จบเที่ยว"'}
       </div>
 
       {active.drops.map((d) => {
@@ -283,7 +327,10 @@ export default function DriverHome() {
         return (
           <div key={d.id} className={`rounded-2xl p-4 ring-1 shadow-sm ${d.delivered ? 'bg-slate-50 ring-slate-200 opacity-70' : 'bg-white ring-emerald-200'}`}>
             <div className="flex items-center justify-between mb-3">
-              <div className="font-bold text-slate-800 text-base">{d.delivered ? '✅' : '📍'} จุด {d.seq}: {d.name}</div>
+              <div className="font-bold text-slate-800 text-base">
+                {d.delivered ? '✅' : '📍'} จุด {d.seq}: {d.origin || '—'}
+                <span className="text-orange-500 mx-1">➜</span>{d.destination || d.name}
+              </div>
               <div className="text-xs text-slate-400">{money(d.allowance)}</div>
             </div>
             {d.delivered ? (
@@ -326,12 +373,20 @@ export default function DriverHome() {
                     const gps = await getGps()
                     await delivery.mutateAsync({ dropId: d.id, ...gps, photo_b64: img })
                     notify(`📍 จุด ${d.seq} ส่งสำเร็จ! บันทึกรูป + GPS ปลายทางแล้ว`)
+                    // จุดสุดท้าย → เด้งขอ "เลขไมล์จบ" ต่อทันที (ทริปจะพลิกเป็นรองานหลังจากนี้)
+                    if (remaining <= 1) setEndTarget({ id: active.id, code: active.code, odometer_start: active.odometer_start })
                   })} />
               </div>
             )}
           </div>
         )
       })}
+      {/* 🏁 จบงาน — กรอกเลขไมล์จบอย่างเดียว (เลขไมล์เริ่มบันทึกไปแล้วตอนเริ่มงาน) */}
+      <button disabled={locked}
+        onClick={() => setEndTarget({ id: active.id, code: active.code, odometer_start: active.odometer_start })}
+        className="w-full py-4 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white text-lg font-bold shadow active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+        🏁 จบงาน — บันทึกเลขไมล์จบ
+      </button>
       {actionRow}
       {sheets}
     </div>

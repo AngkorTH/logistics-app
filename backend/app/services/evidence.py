@@ -25,6 +25,11 @@ class EvidenceError(Exception):
 _KIND_LABEL = {ReceiptKind.FUEL: "บิลน้ำมัน", ReceiptKind.TOLL: "บิลทางหลวง"}
 
 
+def _where(receipt: Receipt) -> str:
+    """ข้อความระบุที่มาของบิลใน audit log — รายจุดส่ง หรือเติมระหว่างทาง"""
+    return f"จุด {receipt.drop.seq}" if receipt.drop is not None else "เติมระหว่างทาง"
+
+
 def _guard_not_frozen(trip: Trip) -> None:
     """ทริปที่ปิดงาน (freeze) แล้ว ห้ามแนบหลักฐานเพิ่ม — ต้องขอ correction ก่อน"""
     if trip.frozen:
@@ -52,6 +57,7 @@ def upload_receipt(
     ocr_date: str | None = None,
     captured_at=None,  # เวลาอัปโหลดจริงตอนออฟไลน์ (Offline Auto-Sync) — None = ตอนนี้
     photo_b64: str | None = None,  # รูปถ่ายใบเสร็จจริง (Phase 4)
+    liters: float | None = None,   # จำนวนลิตรที่เติม (บิลน้ำมัน) — ใช้คิด km/L ตอนจบงาน
 ) -> Receipt:
     """อัปบิลน้ำมัน/ทางหลวงรายจุดส่ง → สร้าง/อัปเดต Receipt เป็น Draft (approved=False)
 
@@ -76,6 +82,10 @@ def upload_receipt(
     receipt.amount = amount
     receipt.date = ocr_date
     receipt.approved = False
+    if liters is not None:
+        if liters < 0:
+            raise EvidenceError("จำนวนลิตรติดลบไม่ได้")
+        receipt.liters = round(float(liters), 2)
     photo_path = save_photo_b64(photo_b64, "rcpt")
     if photo_path:
         receipt.photo = photo_path
@@ -96,9 +106,58 @@ def upload_receipt(
     return receipt
 
 
+def log_fuel(
+    db: Session,
+    trip: Trip,
+    actor,
+    *,
+    liters: float,
+    photo_b64: str | None = None,   # รูปสลิปน้ำมัน (Base64)
+    ocr_amount: float | None = None,
+    ocr_date: str | None = None,
+    captured_at=None,
+) -> Receipt:
+    """คนขับแจ้งเติมน้ำมันระหว่างทริป → Receipt (FUEL) ผูกกับทริปตรงๆ ไม่ผูกจุดส่ง
+
+    ต่างจาก upload_receipt: เติมได้หลายครั้งต่อ 1 ทริป (ไม่มี UniqueConstraint)
+    จำนวนลิตรทุกใบจะถูกรวมตอนจบงานเพื่อคิด km/L · ยอดเงินยังเป็น draft รอ Supervisor อนุมัติ
+    """
+    _guard_not_frozen(trip)
+    if liters is None or liters <= 0:
+        raise EvidenceError("ต้องระบุจำนวนลิตรที่เติม (มากกว่า 0)")
+
+    from app.services.storage import save_photo_b64
+
+    receipt = Receipt(
+        trip_id=trip.id,
+        drop_id=None,
+        kind=ReceiptKind.FUEL,
+        amount=_fake_ocr(ReceiptKind.FUEL, ocr_amount),
+        liters=round(float(liters), 2),
+        date=ocr_date,
+        approved=False,
+        photo=save_photo_b64(photo_b64, "fuel"),
+    )
+    if captured_at is not None:
+        receipt.created_at = captured_at
+    db.add(receipt)
+    db.commit()
+    db.refresh(receipt)
+
+    write_audit(
+        db, who_label(actor), "แจ้งเติมน้ำมัน", trip.code,
+        f"{receipt.liters:.2f} ลิตร · OCR draft {receipt.amount:.2f} (รออนุมัติ)",
+    )
+    push_notification(
+        db, "FUEL_LOGGED", f"แจ้งเติมน้ำมัน · {trip.code}",
+        f"{receipt.liters:.2f} ลิตร · ยอด OCR {receipt.amount:.2f} (รอยืนยัน)", trip.id,
+    )
+    return receipt
+
+
 def approve_receipt(db: Session, receipt: Receipt, actor, *, amount: float | None = None) -> Receipt:
     """Supervisor ยืนยันยอดบิล (แก้ยอดได้ก่อน approve) → approved=True นับเข้ายอดจริง"""
-    _guard_not_frozen(receipt.drop.trip)
+    _guard_not_frozen(receipt.owner_trip)
     if amount is not None:
         receipt.amount = round(float(amount), 2)
     receipt.approved = True
@@ -106,8 +165,8 @@ def approve_receipt(db: Session, receipt: Receipt, actor, *, amount: float | Non
     db.refresh(receipt)
 
     write_audit(
-        db, who_label(actor), "อนุมัติบิล", receipt.drop.trip.code,
-        f"จุด {receipt.drop.seq} · {_KIND_LABEL[receipt.kind]} · ยืนยัน {receipt.amount:.2f}",
+        db, who_label(actor), "อนุมัติบิล", receipt.owner_trip.code,
+        f"{_where(receipt)} · {_KIND_LABEL[receipt.kind]} · ยืนยัน {receipt.amount:.2f}",
     )
     return receipt
 
@@ -118,7 +177,7 @@ def edit_receipt_amount(db: Session, receipt: Receipt, actor, new_amount: float,
     ต่างจาก approve: ใช้แก้ยอดได้ทั้งบิล draft และบิลที่อนุมัติแล้ว (ยังไม่ freeze)
     ทุกครั้งบันทึกลง Audit Trail: ใครแก้ · บิลของทริป/จุดไหน · ยอดเดิม→ใหม่ · เหตุผล
     """
-    _guard_not_frozen(receipt.drop.trip)
+    _guard_not_frozen(receipt.owner_trip)
     if not reason or not reason.strip():
         raise EvidenceError("ต้องระบุเหตุผลการแก้ไขยอดเงินเสมอ")
     if new_amount < 0:
@@ -130,8 +189,8 @@ def edit_receipt_amount(db: Session, receipt: Receipt, actor, new_amount: float,
     db.refresh(receipt)
 
     write_audit(
-        db, who_label(actor), "แก้ยอดเงินใบเสร็จ (OCR)", receipt.drop.trip.code,
-        f"จุด {receipt.drop.seq} · {_KIND_LABEL[receipt.kind]} · {old:.2f} → {receipt.amount:.2f} · เหตุผล: {reason.strip()}",
+        db, who_label(actor), "แก้ยอดเงินใบเสร็จ (OCR)", receipt.owner_trip.code,
+        f"{_where(receipt)} · {_KIND_LABEL[receipt.kind]} · {old:.2f} → {receipt.amount:.2f} · เหตุผล: {reason.strip()}",
     )
     return receipt
 

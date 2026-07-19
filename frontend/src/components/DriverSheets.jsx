@@ -38,12 +38,32 @@ export function InspectionCard({ onSubmit, busy }) {
   const [items, setItems] = useState(Object.fromEntries(CHECK_ITEMS.map((c) => [c.key, true])))
   const [note, setNote] = useState('')
   const [photo, setPhoto] = useState(null) // Phase 4: dataURL รูปจุดชำรุดจริง
+  const [odo, setOdo] = useState('')       // เลขไมล์ตอนเริ่ม (บังคับ)
+  const [odoPhoto, setOdoPhoto] = useState(null) // รูปหน้าปัดไมล์ (บังคับ)
   const hasDefect = Object.values(items).some((v) => !v)
+  // ปุ่มส่งผลตรวจปลดล็อกเมื่อ: เลขไมล์ + รูปหน้าปัดครบ (และมีรูปจุดชำรุดถ้าติ๊กชำรุด)
+  const odoOk = Number(odo) > 0 && !!odoPhoto
+  const canSubmit = odoOk && !(hasDefect && !photo)
 
   return (
     <div className="bg-white rounded-2xl ring-2 ring-blue-300 p-4 shadow-sm space-y-3">
       <div className="font-bold text-slate-800 text-base">🔧 ตรวจสภาพรถก่อนวิ่ง (บังคับ)</div>
-      <div className="text-xs text-slate-500 -mt-2">แตะรายการที่ "ชำรุด" ให้เป็นสีแดง แล้วกดส่งผลตรวจ</div>
+      <div className="text-xs text-slate-500 -mt-2">บันทึกเลขไมล์ + แตะรายการที่ "ชำรุด" ให้เป็นสีแดง แล้วกดส่งผลตรวจ</div>
+
+      {/* ---- เลขไมล์เริ่ม + รูปหน้าปัด (บังคับก่อนส่งผลตรวจ) ---- */}
+      <div className="space-y-2 bg-blue-50 rounded-xl p-3 ring-1 ring-blue-200">
+        <div className="text-sm font-semibold text-blue-800">🧭 เลขไมล์ตอนเริ่ม (บังคับ)</div>
+        <input type="number" inputMode="decimal" min="0" step="0.1" value={odo}
+          onChange={(e) => setOdo(e.target.value)} placeholder="เช่น 125430"
+          className="w-full border border-blue-200 rounded-xl px-4 py-3 text-2xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-200" />
+        {odoPhoto && <img src={odoPhoto} alt="หน้าปัดไมล์" className="w-full max-h-40 object-contain rounded-lg ring-1 ring-blue-200 bg-white" />}
+        <button onClick={async () => { const img = await pickImage(); if (img) setOdoPhoto(img) }}
+          className={`w-full py-3 rounded-xl text-base font-bold active:scale-[0.98] transition ${
+            odoPhoto ? 'bg-slate-100 text-slate-500' : 'bg-blue-500 hover:bg-blue-600 text-white'
+          }`}>
+          {odoPhoto ? '🔄 ถ่ายรูปหน้าปัดใหม่' : '📷 ถ่ายรูปหน้าปัดไมล์ (บังคับ)'}
+        </button>
+      </div>
 
       {CHECK_ITEMS.map((c) => (
         <button key={c.key}
@@ -78,11 +98,19 @@ export function InspectionCard({ onSubmit, busy }) {
       )}
 
       <button
-        disabled={busy || (hasDefect && !photo)}
-        onClick={() => onSubmit({ items, defect_note: note, defect_photo_b64: hasDefect ? photo : null })}
+        disabled={busy || !canSubmit}
+        onClick={() => onSubmit({
+          items, defect_note: note, defect_photo_b64: hasDefect ? photo : null,
+          odometer_start: Number(odo), odometer_photo_b64: odoPhoto,
+        })}
         className="w-full py-4 rounded-2xl bg-blue-500 hover:bg-blue-600 text-white text-lg font-bold shadow active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
         {busy ? '⏳ กำลังส่งผลตรวจ…' : hasDefect ? '📨 ส่งให้คนคุมงานประเมิน' : '✅ ส่งผลตรวจ — ผ่านทุกข้อ'}
       </button>
+      {!odoOk && (
+        <div className="text-center text-xs font-semibold text-slate-500">
+          ต้องกรอกเลขไมล์ และถ่ายรูปหน้าปัดไมล์ก่อน จึงจะส่งผลตรวจได้
+        </div>
+      )}
     </div>
   )
 }
@@ -169,6 +197,88 @@ export function ReportIssueSheet({ onClose, onSubmit, busy }) {
         </button>
         {!valid && (
           <div className="text-center text-xs text-slate-400">ต้องกรอกรายละเอียด และแนบรูปหลักฐานก่อนส่ง</div>
+        )}
+      </div>
+    </BottomSheet>
+  )
+}
+
+
+/* ---------- จบงาน: เลขไมล์จบอย่างเดียว (Odometer End) ---------- */
+// ไม่มีช่อง "เลขไมล์เริ่ม" แล้ว — บันทึกไปตั้งแต่ตอนกดเริ่มงาน · ระบบคิด km/L ให้เอง
+export function EndTripSheet({ onClose, onSubmit, busy, odometerStart }) {
+  const [odo, setOdo] = useState('')
+  const n = Number(odo)
+  // เลขไมล์จบต้องไม่น้อยกว่าเลขไมล์เริ่มของทริปนี้
+  const tooLow = odometerStart != null && n > 0 && n < odometerStart
+  const valid = n > 0 && !tooLow
+
+  return (
+    <BottomSheet title="🏁 จบงาน — บันทึกเลขไมล์จบ" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 text-slate-600 text-sm px-3 py-2.5">
+          {odometerStart != null
+            ? <>เลขไมล์ตอนเริ่มงานคือ <b>{odometerStart.toLocaleString('th-TH')} กม.</b> — กรอกเลขบนหน้าปัดตอนนี้</>
+            : 'กรอกเลขไมล์บนหน้าปัดตอนนี้'}
+          <div className="text-xs text-slate-400 mt-1">ระบบจะคิดระยะทางและอัตราสิ้นเปลือง (กม./ลิตร) ให้อัตโนมัติ</div>
+        </div>
+        <div>
+          <label className="block text-sm font-semibold text-slate-600 mb-1">เลขไมล์ตอนจบ (กม.)</label>
+          <input type="number" inputMode="decimal" min="0" step="0.1" value={odo}
+            onChange={(e) => setOdo(e.target.value)} placeholder="เช่น 125680"
+            className="w-full border border-slate-300 rounded-xl px-4 py-3 text-2xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-200" />
+        </div>
+        {tooLow && (
+          <div className="text-center text-sm font-bold text-red-600">
+            ⚠️ เลขไมล์จบน้อยกว่าเลขไมล์เริ่ม — ตรวจเลขบนหน้าปัดอีกครั้ง
+          </div>
+        )}
+        <button disabled={busy || !valid} onClick={() => onSubmit({ odometer_end: n })}
+          className="w-full py-5 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white text-xl font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+          {busy ? '⏳ กำลังบันทึก…' : '🏁 ยืนยันจบงาน'}
+        </button>
+        {!valid && !tooLow && (
+          <div className="text-center text-xs text-slate-400">ต้องกรอกเลขไมล์จบก่อนจึงจะจบงานได้</div>
+        )}
+      </div>
+    </BottomSheet>
+  )
+}
+
+/* ---------- บันทึกเติมน้ำมันระหว่างทาง (Refuel) ---------- */
+// บังคับกรอก 2 อย่าง: จำนวนลิตร + รูปสลิปน้ำมัน · ลิตรทุกใบถูกรวมไปคิด km/L ตอนจบงาน
+export function RefuelSheet({ onClose, onSubmit, busy }) {
+  const [liters, setLiters] = useState('')
+  const [photo, setPhoto] = useState(null)   // dataURL รูปสลิป (บังคับ)
+  const valid = Number(liters) > 0 && !!photo
+
+  return (
+    <BottomSheet title="⛽ บันทึกเติมน้ำมัน" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 text-slate-600 text-sm px-3 py-2.5">
+          กรอกจำนวนลิตรตามที่ปั๊มเติมจริง แล้วถ่ายรูปสลิปแนบ —
+          ระบบจะรวมลิตรทั้งทริปไปคิด <b>อัตราสิ้นเปลือง (กม./ลิตร)</b> ตอนจบงาน
+        </div>
+        <div>
+          <label className="block text-sm font-semibold text-slate-600 mb-1">จำนวนลิตร (บังคับ)</label>
+          <input type="number" inputMode="decimal" min="0" step="0.01" value={liters}
+            onChange={(e) => setLiters(e.target.value)} placeholder="เช่น 40.5"
+            className="w-full border border-slate-300 rounded-xl px-4 py-3 text-2xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-200" />
+        </div>
+        {photo && <img src={photo} alt="สลิปน้ำมัน" className="w-full max-h-48 object-contain rounded-lg ring-1 ring-slate-200 bg-slate-50" />}
+        <button onClick={async () => { const img = await pickImage(); if (img) setPhoto(img) }}
+          className={`w-full py-3.5 rounded-xl text-base font-bold active:scale-[0.98] transition ${
+            photo ? 'bg-slate-100 text-slate-500' : 'bg-white ring-1 ring-slate-300 text-slate-700'
+          }`}>
+          {photo ? '🔄 ถ่ายสลิปใหม่' : '📷 ถ่ายรูปสลิปน้ำมัน (บังคับ)'}
+        </button>
+        <button disabled={busy || !valid}
+          onClick={() => onSubmit({ liters: Number(liters), photo_b64: photo })}
+          className="w-full py-5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xl font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+          {busy ? '⏳ กำลังบันทึก…' : '⛽ บันทึกการเติมน้ำมัน'}
+        </button>
+        {!valid && (
+          <div className="text-center text-xs text-slate-400">ต้องกรอกจำนวนลิตร และแนบรูปสลิปก่อนส่ง</div>
         )}
       </div>
     </BottomSheet>

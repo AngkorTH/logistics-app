@@ -124,6 +124,16 @@ class MonthlyHistoryRow(BaseModel):
     total_penalty: float
 
 
+class SubTripRow(BaseModel):
+    """งานย่อย (Sub-Trip/Drop) 1 ใบ ใต้เที่ยวหลัก — โชว์ 'ต้นทาง → ปลายทาง' ในประวัติ"""
+    seq: int
+    origin: str
+    destination: str
+    allowance: float
+    delivered: bool
+    delivered_at: str | None = None
+
+
 class TripHistoryRow(BaseModel):
     """แถวรายเที่ยวในตารางประวัติทริปรายเดือน (เมื่อเลือกเดือน/ปีแล้ว)"""
     trip_id: int
@@ -132,7 +142,8 @@ class TripHistoryRow(BaseModel):
     plate: str | None
     distance_km: float
     difficulty: TripDifficulty
-    drops: int                       # จำนวนจุดส่ง
+    drops: int                       # จำนวนงานย่อย (Sub-Trips)
+    sub_trips: list[SubTripRow] = []  # รายการงานย่อยเรียงตามลำดับ (กดดูรายละเอียดในหน้าประวัติ)
     allowance_net: float
     penalty: float
 

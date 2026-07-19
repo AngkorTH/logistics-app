@@ -109,6 +109,18 @@ def monthly_trip_rows(db: Session, driver: User, year: int, month: int) -> list[
             "distance_km": t.distance_km,
             "difficulty": t.difficulty,
             "drops": len(t.drops),
+            # งานย่อยเรียงตามลำดับ — หน้าประวัติกางดู "ต้นทาง → ปลายทาง" รายใบได้
+            "sub_trips": [
+                {
+                    "seq": d.seq,
+                    "origin": d.origin or "—",
+                    "destination": d.destination or d.name,
+                    "allowance": round(d.allowance, 2),
+                    "delivered": d.delivered,
+                    "delivered_at": d.delivered_at.isoformat() if d.delivered_at else None,
+                }
+                for d in sorted(t.drops, key=lambda x: x.seq)
+            ],
             "allowance_net": round(fin.allowance_net, 2),
             "penalty": round(fin.penalty, 2),
         })

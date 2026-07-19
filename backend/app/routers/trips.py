@@ -11,11 +11,19 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import get_current_user, get_trip, require_supervisor
 from app.models import Drop, Role, Trip, User, Vehicle
-from app.models.enums import VehicleStatus
+from app.models.enums import TripStatus, VehicleStatus
 from app.schemas.auth import UserOut
 from app.schemas.ops import (
     AssignRequest,
+    CompleteTripRequest,
+    DriverPickOut,
+    DropAddRequest,
+    DropOut,
+    EndTripRequest,
     FinanceOut,
+    FuelLogRequest,
+    ReceiptOut,
+    StartTripRequest,
     GeoRequest,
     StatusOverrideRequest,
     TripAdjustRequest,
@@ -28,11 +36,16 @@ from app.schemas.ops import (
 from app.services.audit import who_label, write_audit
 from app.services.finance import FinanceError, compute_finance
 from app.services.trip_edit import adjust_trip
+from app.services.evidence import EvidenceError, log_fuel
+from app.services.storage import StorageError
 from app.services.state_machine import (
     TransitionError,
     TransitionWarning,
+    add_drop,
     assign_trip,
     close_trip,
+    complete_trip,
+    end_trip,
     finish_loading,
     override_status,
     unfreeze_trip,
@@ -84,7 +97,11 @@ def create_trip(
     db.add(trip)
     db.flush()
     for i, d in enumerate(body.drops, start=1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=d.name.strip(), allowance=d.allowance))
+        db.add(Drop(
+            trip_id=trip.id, seq=i, name=d.label(),
+            origin=d.origin.strip(), destination=d.destination.strip(),
+            allowance=d.allowance,
+        ))
     db.commit()
     db.refresh(trip)
 
@@ -100,13 +117,64 @@ def list_drivers(
     db: Session = Depends(get_db),
     _: User = Depends(require_supervisor),
 ):
-    """รายชื่อคนขับที่ active — ใช้ในฟอร์มจ่ายงาน"""
+    """รายชื่อคนขับที่ active ทั้งหมด — ใช้เป็น lookup ชื่อ (ประวัติทริป / คลังรถยนต์)
+    ฟอร์มจ่ายงานใช้ /meta/drivers/available แทน (กรองเฉพาะคนรองาน)"""
     return (
         db.query(User)
         .filter(User.role == Role.DRIVER, User.active.is_(True))
         .order_by(User.emp_id)
         .all()
     )
+
+
+@router.get("/meta/drivers/available", response_model=list[DriverPickOut])
+def list_available_drivers(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_supervisor),
+):
+    """รายชื่อคนขับสำหรับฟอร์มจ่ายงาน — **เฉพาะคนที่ 'รองาน' (สีขาว) เท่านั้น**
+
+    คนที่กำลังวิ่งงาน (มีทริปสถานะ ORANGE/GREEN) ถูกตัดออก ไม่ส่งมาให้เลือก
+
+    คนที่ว่างถูกแยก 2 ประเภทด้วย waiting_type:
+    - SUB_TRIP = ยังมีเที่ยวหลักค้าง (completed_at ว่าง) → รับ "งานย่อย" เข้าเที่ยวเดิมได้
+    - NEW_TRIP = ไม่มีเที่ยวหลักค้างเลย → พร้อมรับเที่ยวใหม่
+    """
+    drivers = (
+        db.query(User)
+        .filter(User.role == Role.DRIVER, User.active.is_(True))
+        .order_by(User.emp_id)
+        .all()
+    )
+
+    # ทริปที่ "ยังไม่จบ" ทั้งหมด (ยังไม่กดจบเที่ยว + ยังไม่ถูกล็อกการเงิน) ดึงรอบเดียวกัน N+1 query
+    open_trips = (
+        db.query(Trip)
+        .filter(Trip.completed_at.is_(None), Trip.frozen.is_(False))
+        .order_by(Trip.id)
+        .all()
+    )
+    busy_ids = {t.driver_id for t in open_trips if t.status in (TripStatus.ORANGE, TripStatus.GREEN)}
+    # เที่ยวหลักที่ยัง Active ของคนที่ว่าง — ต้องเคยถูกจ่ายงานแล้ว (มี assigned_at) ไม่ใช่ทริปเปล่า
+    active_by_driver: dict[int, Trip] = {}
+    for t in open_trips:
+        if t.driver_id not in busy_ids and t.assigned_at is not None:
+            active_by_driver.setdefault(t.driver_id, t)
+
+    rows = []
+    for d in drivers:
+        if d.id in busy_ids:
+            continue  # กำลังวิ่งงานอยู่ — ห้ามส่งไปให้เลือก
+        act = active_by_driver.get(d.id)
+        rows.append(DriverPickOut(
+            id=d.id, emp_id=d.emp_id, name=d.name, phone=d.phone,
+            role=d.role, active=d.active, notif=d.notif,
+            waiting_type="SUB_TRIP" if act else "NEW_TRIP",
+            active_trip_id=act.id if act else None,
+            active_trip_code=act.code if act else None,
+            active_trip_drops=len(act.drops) if act else 0,
+        ))
+    return rows
 
 
 @router.get("/meta/vehicles", response_model=list[VehicleOut])
@@ -219,18 +287,97 @@ def override_status_ep(
 
 @router.post("/{trip_id}/finish-loading", response_model=TripDetailOut)
 def finish_loading_ep(
-    body: GeoRequest,
+    body: StartTripRequest,
     trip: Trip = Depends(get_trip),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """คนขับกด 'ขนของขึ้นเสร็จ' (เจ้าของทริป) → GREEN + GPS ต้นทาง"""
+    """คนขับกด 'ขนของขึ้นเสร็จ' (เจ้าของทริป) → GREEN + GPS ต้นทาง
+    บังคับส่งเลขไมล์เริ่ม + รูปหน้าปัดไมล์ (ขาด/เลขน้อยกว่าเที่ยวก่อน = 400 บล็อก)"""
     _assert_own_driver(trip, user)
     try:
         finish_loading(
             db, trip, trip.driver, body.lat, body.lng,
+            odometer_start=body.odometer_start, odometer_photo_b64=body.odometer_photo_b64,
             force=body.force, captured_at=body.captured_at,
         )
+    except TransitionWarning as w:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(w))
+    except TransitionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _detail(trip)
+
+
+@router.post("/{trip_id}/fuel", response_model=ReceiptOut)
+def log_fuel_ep(
+    body: FuelLogRequest,
+    trip: Trip = Depends(get_trip),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """คนขับแจ้งเติมน้ำมันระหว่างทริป: รูปสลิป + จำนวนลิตร → Receipt draft ผูกกับทริป
+    เติมได้หลายครั้งต่อทริป · ลิตรทุกใบจะถูกรวมตอนจบงานเพื่อคิด km/L"""
+    _assert_own_driver(trip, user)
+    try:
+        return log_fuel(
+            db, trip, user,
+            liters=body.liters, photo_b64=body.photo_b64,
+            ocr_amount=body.ocr_amount, ocr_date=body.ocr_date,
+            captured_at=body.captured_at,
+        )
+    except (EvidenceError, StorageError) as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+
+@router.post("/{trip_id}/end", response_model=TripDetailOut)
+def end_trip_ep(
+    body: EndTripRequest,
+    trip: Trip = Depends(get_trip),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """จบงาน (End Trip): ส่งเลขไมล์จบ → คิดระยะทาง + km/L อัตโนมัติแล้วเก็บลงทริป
+    ยังส่งของไม่ครบ → 409 ให้ยืนยันแล้วส่ง force=True (warn-don't-block)"""
+    _assert_own_driver(trip, user)
+    try:
+        end_trip(db, trip, user, body.odometer_end, force=body.force)
+    except TransitionWarning as w:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(w))
+    except TransitionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _detail(trip)
+
+
+@router.post("/{trip_id}/drops", response_model=DropOut)
+def add_drop_ep(
+    body: DropAddRequest,
+    trip: Trip = Depends(get_trip),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_supervisor),
+):
+    """เพิ่มงานย่อย (Sub-Trip) เข้าไปในทริปเดิมที่ยัง Active (Supervisor+)
+    บังคับ origin (เริ่มจากไหน) + destination (ไปส่งที่ไหน) เสมอ"""
+    try:
+        return add_drop(
+            db, trip, actor,
+            origin=body.origin, destination=body.destination,
+            name=body.name, allowance=body.allowance,
+        )
+    except TransitionError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+
+@router.post("/{trip_id}/complete", response_model=TripDetailOut)
+def complete_ep(
+    body: CompleteTripRequest | None = None,
+    trip: Trip = Depends(get_trip),
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_supervisor),
+):
+    """จบเที่ยวหลัก (Supervisor+) — เที่ยวจะจบสมบูรณ์ก็ต่อเมื่อกดปุ่มนี้เท่านั้น
+    ยังส่งงานย่อยไม่ครบ → 409 ให้ยืนยันแล้วส่ง force=True"""
+    try:
+        complete_trip(db, trip, actor, force=bool(body and body.force))
     except TransitionWarning as w:
         raise HTTPException(status.HTTP_409_CONFLICT, str(w))
     except TransitionError as e:

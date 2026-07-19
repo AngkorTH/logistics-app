@@ -13,8 +13,14 @@ from app.services.advance import (
     request_advance,
 )
 from app.services.finance import compute_finance
-from app.services.state_machine import assign_trip, close_trip, finish_loading, record_delivery
-from tests.conftest import pass_inspection
+from app.services.state_machine import (
+    assign_trip,
+    close_trip,
+    complete_trip,
+    finish_loading,
+    record_delivery,
+)
+from tests.conftest import ODO_PHOTO, pass_inspection
 
 
 @pytest.fixture()
@@ -45,9 +51,11 @@ def _mk_trip(db, driver, code="T-200", n_drops=2, allowance=300):
 def _run_to_delivered(db, trip, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
     for d in trip.drops:
         record_delivery(db, d, driver, 13.8, 100.6)
+    # flow ใหม่: เที่ยวหลักจบสมบูรณ์เมื่อ Supervisor กด "จบเที่ยว" เท่านั้น
+    complete_trip(db, trip, supervisor)
 
 
 # ------------------------------ validations ------------------------------

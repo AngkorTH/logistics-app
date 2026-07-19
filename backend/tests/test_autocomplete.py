@@ -1,7 +1,8 @@
-"""Integration tests: จบงานอัตโนมัติ + กล่องจดหมายแจ้งเตือน
-- ส่งครบทุกจุด → WHITE อัตโนมัติ (ยังไม่ freeze) · บิลไม่บังคับ
-- คนคุมยังตรวจ/อนุมัติบิลได้หลังจบงาน (ยังไม่ล็อก)
-- แจ้งเตือน BILL_UPLOADED เมื่ออัปบิล · TRIP_DONE เมื่อจบงาน
+"""Integration tests: Dynamic Multi-Drop + กล่องจดหมายแจ้งเตือน
+- จบงานย่อย 1 ใบ → คนขับกลับเป็น "รองาน" (WHITE) ทันที · เที่ยวหลักยัง Active
+- เที่ยวหลักจบสมบูรณ์เมื่อ Supervisor กด "จบเที่ยว" (POST /trips/{id}/complete) เท่านั้น
+- คนคุมยังตรวจ/อนุมัติบิลได้หลังจบเที่ยว (ยังไม่ล็อก)
+- แจ้งเตือน BILL_UPLOADED เมื่ออัปบิล · TRIP_DONE เมื่อจบเที่ยว
 - Notification inbox RBAC (Driver 403) + mark read
 """
 from datetime import datetime, timezone
@@ -46,45 +47,86 @@ def _green_trip(db, code="T-AC", n=2):
     db.commit()
     db.refresh(trip)
     for i in range(1, n + 1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=300))
+        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=300,
+                    origin=f"ต้นทาง{i}", destination=f"ปลายทาง{i}"))
     db.commit()
     db.refresh(trip)
     return trip
 
 
-# =========================== Auto-complete ===========================
-def test_partial_delivery_stays_green(client, staff):
+# =================== Dynamic Multi-Drop (จบงานย่อย / จบเที่ยว) ===================
+def test_sub_trip_done_frees_driver_but_main_trip_stays_active(client, staff):
+    """จบงานย่อย 1 ใบ → คนขับ WHITE (รองาน) ทันที แต่เที่ยวหลักยัง Active"""
     trip = _green_trip(staff, "T-AC1", n=2)
     drv = login(client, "D01")
     r = client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
     assert r.status_code == 200
-    # ส่งแค่จุดเดียว → ทริปยังไม่จบ (GREEN)
     staff.refresh(trip)
-    assert trip.status is TripStatus.GREEN
+    assert trip.status is TripStatus.WHITE      # คนขับว่างรับงานใหม่ได้เลย
+    assert trip.completed_at is None            # เที่ยวหลักยังไม่จบ
+    assert trip.closed_at is None
 
 
-def test_full_delivery_auto_completes_white_not_frozen(client, staff):
-    """ส่งครบทุกจุด → WHITE อัตโนมัติ · closed_at set · ยังไม่ freeze · ไม่ต้องมีบิล"""
+def test_full_delivery_does_not_auto_complete(client, staff):
+    """ส่งครบทุกงานย่อย ก็ยังไม่จบเที่ยว — ต้องรอ Supervisor กด 'จบเที่ยว'"""
     trip = _green_trip(staff, "T-AC2", n=2)
     drv = login(client, "D01")
     for d in trip.drops:
         assert client.post(f"/drops/{d.id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE
-    assert trip.closed_at is not None
-    assert trip.frozen is False   # บิลยังตรวจได้ทีหลัง
+    assert trip.completed_at is None
+    # ยังไม่จบเที่ยว → ล็อกการเงินไม่ได้
+    sv = login(client, "SV01")
+    assert client.post(f"/trips/{trip.id}/close", headers=sv).status_code == 400
+    # Supervisor กดจบเที่ยว → completed_at ถูกตั้ง แต่ยังไม่ freeze
+    r = client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)
+    assert r.status_code == 200
+    assert r.json()["completed_at"] is not None and r.json()["frozen"] is False
 
 
-def test_bills_reviewable_after_auto_complete(client, staff):
-    """หลังจบงานอัตโนมัติ (ยังไม่ล็อก) คนคุมยังอนุมัติบิลได้"""
+def test_complete_trip_driver_forbidden(client, staff):
+    trip = _green_trip(staff, "T-AC6", n=1)
+    assert client.post(f"/trips/{trip.id}/complete", json={},
+                       headers=login(client, "D01")).status_code == 403
+
+
+def test_complete_warns_when_sub_trips_incomplete(client, staff):
+    """ยังส่งงานย่อยไม่ครบ → 409 ให้ยืนยัน แล้ว force ผ่าน"""
+    trip = _green_trip(staff, "T-AC7", n=2)
+    sv = login(client, "SV01")
+    assert client.post(f"/trips/{trip.id}/complete", json={}, headers=sv).status_code == 409
+    r = client.post(f"/trips/{trip.id}/complete", json={"force": True}, headers=sv)
+    assert r.status_code == 200 and r.json()["override"] is True
+
+
+def test_add_sub_trip_to_active_trip(client, staff):
+    """เพิ่มงานย่อยเข้าทริปเดิมที่ยัง Active — origin/destination บังคับ"""
+    trip = _green_trip(staff, "T-AC8", n=1)
+    sv = login(client, "SV01")
+    # ขาด origin → 422 (schema บังคับ)
+    assert client.post(f"/trips/{trip.id}/drops", json={"destination": "กรุงเทพ"}, headers=sv).status_code == 422
+    r = client.post(f"/trips/{trip.id}/drops",
+                    json={"origin": "ลำปาง", "destination": "กรุงเทพ", "allowance": 400}, headers=sv)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["seq"] == 2 and body["origin"] == "ลำปาง" and body["destination"] == "กรุงเทพ"
+    # จบเที่ยวแล้วเพิ่มไม่ได้อีก
+    client.post(f"/trips/{trip.id}/complete", json={"force": True}, headers=sv)
+    assert client.post(f"/trips/{trip.id}/drops",
+                       json={"origin": "ก", "destination": "ข"}, headers=sv).status_code == 400
+
+
+def test_bills_reviewable_after_complete(client, staff):
+    """หลังจบเที่ยว (ยังไม่ล็อก) คนคุมยังอนุมัติบิลได้"""
     trip = _green_trip(staff, "T-AC3", n=1)
     drv = login(client, "D01")
     sv = login(client, "SV01")
     # อัปบิลก่อนส่ง
     r = client.post(f"/drops/{trip.drops[0].id}/receipt", json={"kind": "FUEL", "ocr_amount": 800}, headers=drv)
     rid = r.json()["id"]
-    # ส่งครบ → auto WHITE
     client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE and trip.frozen is False
     # ยังอนุมัติบิลได้ (ไม่ freeze)
@@ -120,10 +162,11 @@ def test_bill_upload_creates_notification(client, staff):
     assert any(n["kind"] == "BILL_UPLOADED" and n["trip_id"] == trip.id for n in rows)
 
 
-def test_auto_complete_creates_notification(client, staff):
+def test_complete_creates_notification(client, staff):
     trip = _green_trip(staff, "T-AC5", n=1)
     drv = login(client, "D01")
     client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/trips/{trip.id}/complete", json={}, headers=login(client, "SV01"))
     rows = client.get("/notifications", headers=login(client, "SV01")).json()
     assert any(n["kind"] == "TRIP_DONE" and n["trip_id"] == trip.id for n in rows)
 
@@ -139,6 +182,7 @@ def _frozen_trip(client, staff):
     drv = login(client, "D01")
     sv = login(client, "SV01")
     client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)   # จบเที่ยว
     client.post(f"/trips/{trip.id}/close", headers=sv)   # ล็อกการเงิน
     staff.refresh(trip)
     assert trip.frozen is True

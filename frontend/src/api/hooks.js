@@ -18,6 +18,7 @@ const useTripMutation = (fn) => {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['trips'] })
       qc.invalidateQueries({ queryKey: ['dispatch'] })  // คิวงานอิงสถานะทริป ต้อง refresh ด้วย
+      qc.invalidateQueries({ queryKey: ['drivers-available'] })  // รายชื่อคนรองานเปลี่ยนตามสถานะทริป
     },
   })
 }
@@ -25,6 +26,13 @@ const useTripMutation = (fn) => {
 // ---------- ฟอร์มจ่ายงาน (สร้างทริป + meta) ----------
 export const useDrivers = () =>
   useQuery({ queryKey: ['drivers'], queryFn: () => api.get('/trips/meta/drivers').then((r) => r.data) })
+// ฟอร์มจ่ายงาน: เฉพาะคนขับที่ "รองาน" (สีขาว) — backend ตัดคนที่กำลังวิ่งงานออกให้แล้ว
+// แต่ละคนมี waiting_type = SUB_TRIP (เที่ยวหลักยังค้าง) | NEW_TRIP (ไม่มีเที่ยวค้าง)
+export const useAvailableDrivers = () =>
+  useQuery({
+    queryKey: ['drivers-available'],
+    queryFn: () => api.get('/trips/meta/drivers/available').then((r) => r.data),
+  })
 export const useVehicles = () =>
   useQuery({ queryKey: ['vehicles'], queryFn: () => api.get('/trips/meta/vehicles').then((r) => r.data) })
 export const useCreateTrip = () =>
@@ -36,9 +44,14 @@ export const useAssign = () =>
   useTripMutation(({ tripId, difficulty, force }) =>
     api.post(`/trips/${tripId}/assign`, { difficulty, force }))
 // ปุ่มฝั่งคนขับใช้ sendOrQueue — ออฟไลน์แล้วเก็บคิว IndexedDB ส่งเองเมื่อเน็ตกลับ (Phase 3B)
+// เริ่มงาน: บังคับส่งเลขไมล์เริ่ม + รูปหน้าปัดไมล์ (backend บล็อกถ้าขาด/เลขน้อยกว่าเที่ยวก่อน)
 export const useFinishLoading = () =>
-  useTripMutation(({ tripId, lat, lng, force }) =>
-    sendOrQueue({ url: `/trips/${tripId}/finish-loading`, body: { lat, lng, force }, label: '✅ ขึ้นของเสร็จ' }))
+  useTripMutation(({ tripId, lat, lng, force, odometer_start, odometer_photo_b64 }) =>
+    sendOrQueue({
+      url: `/trips/${tripId}/finish-loading`,
+      body: { lat, lng, force, odometer_start, odometer_photo_b64 },
+      label: '✅ ขึ้นของเสร็จ',
+    }))
 // task 1: เปลี่ยนสถานะทริปแบบ Manual — บังคับ reason (invalidate dispatch ด้วย)
 export const useOverrideStatus = () => {
   const qc = useQueryClient()
@@ -47,8 +60,20 @@ export const useOverrideStatus = () => {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ['trips'] }); qc.invalidateQueries({ queryKey: ['dispatch'] }) },
   })
 }
+// จบงาน: ส่งแค่ "เลขไมล์จบ" (เลขไมล์เริ่มถูกบันทึกไปแล้วตอนเริ่มงาน)
+// backend คิดระยะทาง + km/L ให้เอง · ยังส่งของไม่ครบ → 409 ให้ยืนยันแล้วส่ง force=true
+export const useEndTrip = () =>
+  useTripMutation(({ tripId, odometer_end, force }) =>
+    api.post(`/trips/${tripId}/end`, { odometer_end, force }))
 export const useCloseTrip = () =>
   useTripMutation(({ tripId, force }) => api.post(`/trips/${tripId}/close`, { lat: 0, lng: 0, force }))
+// Dynamic Multi-Drop: เพิ่มงานย่อย (Sub-Trip) เข้าทริปเดิมที่ยัง Active — origin/destination บังคับ
+export const useAddDrop = () =>
+  useTripMutation(({ tripId, origin, destination, allowance }) =>
+    api.post(`/trips/${tripId}/drops`, { origin, destination, allowance }))
+// จบเที่ยวหลัก — เที่ยวจบสมบูรณ์เมื่อ Supervisor กดปุ่มนี้เท่านั้น (409 = ยังส่งไม่ครบ ให้ยืนยัน)
+export const useCompleteTrip = () =>
+  useTripMutation(({ tripId, force }) => api.post(`/trips/${tripId}/complete`, { force }))
 // ปลดล็อกการเงิน (Supervisor/Admin) — บังคับ reason · เด้งแจ้งเตือน
 export const useUnfreeze = () => {
   const qc = useQueryClient()
@@ -70,6 +95,14 @@ export const useApproveReceipt = () =>
 // task 2: แก้ยอดเงิน OCR แบบ manual — บังคับ new_amount + reason
 export const useEditReceiptAmount = () =>
   useTripMutation(({ receiptId, new_amount, reason }) => api.patch(`/receipts/${receiptId}/amount`, { new_amount, reason }))
+// บันทึกเติมน้ำมันระหว่างทริป (Phase 5): ลิตร + รูปสลิป → Receipt draft ผูกกับทริป
+// เติมได้หลายครั้งต่อทริป · ลิตรทุกใบถูกรวมเพื่อคิด km/L ตอนจบงาน
+export const useLogFuel = () =>
+  useTripMutation(({ tripId, liters, photo_b64, ocr_amount }) =>
+    sendOrQueue({
+      url: `/trips/${tripId}/fuel`, body: { liters, photo_b64, ocr_amount },
+      label: '⛽ บันทึกเติมน้ำมัน',
+    }))
 export const useUploadTarp = () =>
   useTripMutation(({ dropId, photo_b64 }) =>
     sendOrQueue({ url: `/drops/${dropId}/tarp`, body: { photo_b64 }, label: '🖼️ รูปผ้าใบ' }))
@@ -88,9 +121,15 @@ export const useInspection = (tripId) =>
 export const useSubmitInspection = () => {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ tripId, items, defect_note, defect_photo_b64 }) =>
-      api.post(`/trips/${tripId}/inspection`, { items, defect_note, defect_photo_b64 }),
-    onSuccess: (_, { tripId }) => qc.invalidateQueries({ queryKey: ['inspection', tripId] }),
+    // บังคับส่งเลขไมล์เริ่ม + รูปหน้าปัดมาด้วยเสมอ — backend เขียนลงทริปทันที
+    mutationFn: ({ tripId, items, defect_note, defect_photo_b64, odometer_start, odometer_photo_b64 }) =>
+      api.post(`/trips/${tripId}/inspection`, {
+        items, defect_note, defect_photo_b64, odometer_start, odometer_photo_b64,
+      }),
+    onSuccess: (_, { tripId }) => {
+      qc.invalidateQueries({ queryKey: ['inspection', tripId] })
+      qc.invalidateQueries({ queryKey: ['trips'] })   // เลขไมล์เริ่มเพิ่งถูกบันทึกลงทริป
+    },
   })
 }
 

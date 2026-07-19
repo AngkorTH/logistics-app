@@ -34,6 +34,7 @@ def submit(
     try:
         return submit_inspection(
             db, trip, user, body.items,
+            odometer_start=body.odometer_start, odometer_photo_b64=body.odometer_photo_b64,
             defect_note=body.defect_note, defect_photo_b64=body.defect_photo_b64,
         )
     except InspectionError as e:

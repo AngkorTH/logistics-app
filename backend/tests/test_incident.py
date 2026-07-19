@@ -16,7 +16,7 @@ from app.services.state_machine import (
     finish_loading,
     record_delivery,
 )
-from tests.conftest import pass_inspection
+from tests.conftest import ODO_PHOTO, pass_inspection
 
 
 @pytest.fixture()
@@ -43,7 +43,7 @@ def _mk_green_trip(db, driver, supervisor, n_drops=2):
     db.refresh(trip)
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
     return trip
 
 

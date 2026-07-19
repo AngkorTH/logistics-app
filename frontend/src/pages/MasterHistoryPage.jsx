@@ -130,8 +130,17 @@ function TripHistoryTab() {
                 {t.override && <span className="ml-2 text-[10px] font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">มีการ override/แก้ไข</span>}
               </div>
               <div className="text-xs text-slate-500 mt-0.5">
-                🚛 {t.plate || '—'} · 📦 {t.drops.length} จุด · เบี้ยเลี้ยง {money(allowance)}
+                🚛 {t.plate || '—'} · 📦 {t.drops.length} งานย่อย · เบี้ยเลี้ยง {money(allowance)}
                 {t.penalty > 0 && <span className="text-red-500"> · หัก {money(t.penalty)} ({t.penalty_reason || '—'})</span>}
+              </div>
+              {/* เที่ยวหลัก 1 รายการ = กลุ่มของงานย่อย — โชว์ Origin → Destination เรียงตามลำดับ */}
+              <div className="mt-1.5 space-y-0.5">
+                {t.drops.map((d) => (
+                  <div key={d.id} className="text-[11px] text-slate-500">
+                    <span className="text-slate-400">#{d.seq}</span>{' '}
+                    {d.origin || '—'} <span className="text-orange-500">➜</span> {d.destination || d.name}
+                  </div>
+                ))}
               </div>
               <div className="text-[11px] text-slate-400 mt-0.5">ปิดบัญชีเมื่อ {new Date(t.closed_at).toLocaleString('th-TH')} · 🔒 ล็อกการเงินแล้ว</div>
             </div>

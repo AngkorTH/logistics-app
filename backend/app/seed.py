@@ -69,11 +69,11 @@ def seed_trips(db):
               finished_loading_at=now - timedelta(minutes=20))
     db.add(t1); db.flush()
     drops1 = [
-        Drop(trip_id=t1.id, seq=1, name="บจก. รุ่งเรือง (บางนา)", allowance=300,
+        Drop(trip_id=t1.id, seq=1, name="ลำปาง → บางนา", origin="ลำปาง", destination="บจก. รุ่งเรือง (บางนา)", allowance=300,
              delivered=True, photo="attached", tarp="attached", gps="13.66840,100.61000",
              delivered_at=now - timedelta(minutes=10)),
-        Drop(trip_id=t1.id, seq=2, name="เซ็นทรัล (พระราม 9)", allowance=350),
-        Drop(trip_id=t1.id, seq=3, name="โลตัส (ลาดพร้าว)", allowance=300),
+        Drop(trip_id=t1.id, seq=2, name="บางนา → พระราม 9", origin="บางนา", destination="เซ็นทรัล (พระราม 9)", allowance=350),
+        Drop(trip_id=t1.id, seq=3, name="พระราม 9 → ลาดพร้าว", origin="พระราม 9", destination="โลตัส (ลาดพร้าว)", allowance=300),
     ]
     db.add_all(drops1); db.flush()
     # บิล OCR Draft (approved=False) — รอ Supervisor กดยืนยันใน Approval Center
@@ -87,21 +87,22 @@ def seed_trips(db):
               distance_km=95, assigned_at=now - timedelta(minutes=10))
     db.add(t2); db.flush()
     db.add_all([
-        Drop(trip_id=t2.id, seq=1, name="ไทยพาณิชย์ (สีลม)", allowance=400),
-        Drop(trip_id=t2.id, seq=2, name="แม็คโคร (จรัญ)", allowance=350),
+        Drop(trip_id=t2.id, seq=1, name="นนทบุรี → สีลม", origin="นนทบุรี", destination="ไทยพาณิชย์ (สีลม)", allowance=400),
+        Drop(trip_id=t2.id, seq=2, name="สีลม → จรัญฯ", origin="สีลม", destination="แม็คโคร (จรัญ)", allowance=350),
     ])
 
     # ---- T-003: WHITE รองาน (ยังไม่จ่ายงาน) ----
     t3 = Trip(code="T-003", driver_id=d01.id, status=TripStatus.WHITE, distance_km=0)
     db.add(t3); db.flush()
-    db.add(Drop(trip_id=t3.id, seq=1, name="บิ๊กซี (รังสิต)", allowance=350))
+    db.add(Drop(trip_id=t3.id, seq=1, name="กรุงเทพ → รังสิต", origin="กรุงเทพ", destination="บิ๊กซี (รังสิต)", allowance=350))
 
     # ---- H-100: ทริปปิดงานแล้ว (frozen) + คำขอปลดล็อกค่าน้ำมัน PENDING ----
     h = Trip(code="H-100", driver_id=d02.id, plate="บม-5678 นนทบุรี", status=TripStatus.WHITE,
              distance_km=95, frozen=True, frozen_fuel=980, frozen_toll=120,
-             closed_at=now - timedelta(days=2), penalty=0, bonus=0)
+             closed_at=now - timedelta(days=2), completed_at=now - timedelta(days=2),
+             penalty=0, bonus=0)
     db.add(h); db.flush()
-    hd = Drop(trip_id=h.id, seq=1, name="ซีคอน (ศรีนครินทร์)", allowance=300,
+    hd = Drop(trip_id=h.id, seq=1, name="นนทบุรี → ศรีนครินทร์", origin="นนทบุรี", destination="ซีคอน (ศรีนครินทร์)", allowance=300,
               delivered=True, photo="attached", tarp="attached", gps="13.64590,100.64690")
     db.add(hd); db.flush()
     db.add_all([

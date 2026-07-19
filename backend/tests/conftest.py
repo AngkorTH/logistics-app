@@ -13,6 +13,13 @@ from app.models import Role, User
 from app.security import hash_password
 
 
+# รูป PNG 1x1 สำหรับเทสต์ — ใช้เป็นรูปหน้าปัดไมล์/สลิปที่ระบบบังคับให้แนบ
+ODO_PHOTO = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
 @pytest.fixture()
 def db_session():
     # สร้างตารางใหม่ทั้งหมดต่อ 1 test เพื่อความสะอาด แยกจากกัน
@@ -48,4 +55,4 @@ def pass_inspection(db, trip, driver):
     """ทางลัดสำหรับเทสต์: ส่งผลตรวจสภาพรถผ่านทุกข้อ (ด่านบังคับก่อน finish_loading)"""
     from app.services.inspection import submit_inspection
 
-    return submit_inspection(db, trip, driver, {"tires": True, "lights": True, "tarp": True})
+    return submit_inspection(db, trip, driver, {"tires": True, "lights": True, "tarp": True}, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)

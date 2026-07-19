@@ -112,7 +112,7 @@ export default function TripAdjustModal({ trip, onClose, onDone }) {
         <div className="space-y-2">
           {trip.drops.map((d) => (
             <div key={d.id} className="flex items-center gap-2">
-              <span className="text-xs text-slate-500 flex-1 truncate">จุด {d.seq}: {d.name} <span className="text-slate-300">(เดิม {money(d.allowance)})</span></span>
+              <span className="text-xs text-slate-500 flex-1 truncate">จุด {d.seq}: {d.origin || '—'} ➜ {d.destination || d.name} <span className="text-slate-300">(เดิม {money(d.allowance)})</span></span>
               <input className={`${inputCls} w-28`} type="number" min="0" value={allowances[d.id]}
                 onChange={(e) => setAllowances({ ...allowances, [d.id]: e.target.value })} />
             </div>

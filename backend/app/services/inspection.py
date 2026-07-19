@@ -47,11 +47,15 @@ def submit_inspection(
     driver: User,
     items: dict[str, bool],
     *,
+    odometer_start: float,          # เลขไมล์ตอนเริ่ม (บังคับ — บันทึกลงทริปทันที)
+    odometer_photo_b64: str,        # รูปหน้าปัดไมล์ (บังคับ)
     defect_note: str = "",
     defect_photo_b64: str | None = None,  # รูปจุดชำรุด (Phase 4 — บังคับเมื่อมีข้อไม่ผ่าน)
 ) -> Inspection:
-    """คนขับส่งผล checklist ตรวจสภาพรถ
+    """คนขับส่งผล checklist ตรวจสภาพรถ + บันทึกเลขไมล์เริ่มพร้อมรูปหน้าปัด
 
+    - เลขไมล์ + รูปหน้าปัดเป็นด่านบังคับ: ขาดข้อใดข้อหนึ่ง = ส่งผลตรวจไม่ได้
+      (ค่าถูกเขียนลงทริปทันที ปุ่ม 'ขึ้นของเสร็จ' จึงไม่ต้องถามซ้ำ)
     - ผ่านครบทุกข้อ → PASSED
     - มีข้อไม่ผ่าน → บังคับแนบรูปจุดชำรุด → PENDING_REVIEW + แจ้งเตือนทีมคุมงาน
     """
@@ -64,6 +68,13 @@ def submit_inspection(
         raise InspectionError("ต้องมีรายการ checklist อย่างน้อย 1 ข้อ")
 
     from app.services.storage import save_photo_b64
+    from app.services.state_machine import TransitionError, _validate_odometer_start
+
+    # ด่านเลขไมล์เริ่ม — ผิด/ขาด = ส่งผลตรวจไม่ได้เลย (ใช้กติกาเดียวกับ state machine)
+    try:
+        odo, odo_photo = _validate_odometer_start(db, trip, odometer_start, odometer_photo_b64)
+    except TransitionError as e:
+        raise InspectionError(str(e))
 
     all_pass = all(items.values())
     if not all_pass and not defect_photo_b64:
@@ -80,13 +91,17 @@ def submit_inspection(
         status=InspectionStatus.PASSED if all_pass else InspectionStatus.PENDING_REVIEW,
     )
     db.add(ins)
+    # เขียนเลขไมล์เริ่ม + รูปหน้าปัดลงทริปใน transaction เดียวกับผลตรวจ
+    trip.odometer_start = odo
+    trip.odometer_start_photo = odo_photo
     db.commit()
     db.refresh(ins)
 
     failed = [k for k, v in items.items() if not v]
     write_audit(
         db, who_label(driver), "ตรวจสภาพรถก่อนวิ่ง", trip.code,
-        "ผ่านทุกข้อ" if all_pass else f"พบจุดชำรุด: {', '.join(failed)} · รอประเมิน",
+        ("ผ่านทุกข้อ" if all_pass else f"พบจุดชำรุด: {', '.join(failed)} · รอประเมิน")
+        + f" · เลขไมล์เริ่ม {odo:.1f} (แนบรูปหน้าปัด)",
     )
     if not all_pass:
         push_notification(

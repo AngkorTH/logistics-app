@@ -9,6 +9,7 @@ from app.main import app
 from app.models import Drop, Role, Trip, User, Vehicle
 from app.models.enums import ReceiptKind, TripStatus
 from app.security import hash_password
+from tests.conftest import ODO_PHOTO
 
 
 def login(client, ident, pw="1234"):
@@ -73,6 +74,8 @@ def test_only_super_admin_approves_correction(client, seeded, db_session):
         d.photo = "attached"
     db_session.commit()
     sv = login(client, "SV01")
+    # จบเที่ยว (force เพราะยังไม่ได้ mark delivered) แล้วจึงล็อกการเงิน
+    assert client.post(f"/trips/{tid}/complete", json={"force": True}, headers=sv).status_code == 200
     assert client.post(f"/trips/{tid}/close", headers=sv).status_code == 200
     # ขอปลดล็อก
     r = client.post(f"/trips/{tid}/corrections",
@@ -122,16 +125,17 @@ def test_full_flow(client, seeded, db_session):
     assert r.json()["plate"] == "1กก-1234"  # ดึงจากคลังรถอัตโนมัติ
 
     # ยังไม่ตรวจสภาพรถ → กดขนของขึ้นเสร็จไม่ได้ (hard-block ด่านตรวจรถ)
-    r = client.post(f"/trips/{tid}/finish-loading", json={"lat": 13.7, "lng": 100.5}, headers=drv)
+    r = client.post(f"/trips/{tid}/finish-loading", json={"lat": 13.7, "lng": 100.5, "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 400
 
     # คนขับส่งผลตรวจสภาพรถผ่านทุกข้อ → PASSED
     r = client.post(f"/trips/{tid}/inspection",
-                    json={"items": {"tires": True, "lights": True, "tarp": True}}, headers=drv)
+                    json={"items": {"tires": True, "lights": True, "tarp": True},
+                          "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 200 and r.json()["status"] == "PASSED"
 
     # คนขับขนของขึ้นเสร็จ → GREEN
-    r = client.post(f"/trips/{tid}/finish-loading", json={"lat": 13.7, "lng": 100.5}, headers=drv)
+    r = client.post(f"/trips/{tid}/finish-loading", json={"lat": 13.7, "lng": 100.5, "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 200 and r.json()["status"] == "GREEN"
 
     # อัปบิลน้ำมันจุดแรก (OCR draft)
@@ -164,7 +168,8 @@ def test_full_flow(client, seeded, db_session):
         r = client.post(f"/drops/{d}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
         assert r.status_code == 200 and r.json()["delivered"] is True
 
-    # ปิดงาน → WHITE + freeze
+    # Supervisor กด 'จบเที่ยว' ก่อน แล้วค่อยล็อกการเงิน → WHITE + freeze
+    assert client.post(f"/trips/{tid}/complete", json={}, headers=sv).status_code == 200
     r = client.post(f"/trips/{tid}/close", headers=sv)
     assert r.status_code == 200 and r.json()["status"] == "WHITE"
     assert r.json()["frozen"] is True
