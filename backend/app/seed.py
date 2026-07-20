@@ -7,9 +7,26 @@
 from datetime import datetime, timedelta, timezone
 
 from app.database import SessionLocal
+from app.logging_config import get_logger
 from app.models import Correction, Drop, Receipt, Role, Trip, User, Vehicle
 from app.models.enums import CorrectionStatus, ReceiptKind, TripStatus
 from app.security import hash_password
+
+logger = get_logger("seed")
+
+# รูปตัวอย่างสำหรับ seed — เขียนไฟล์จริงลง uploads/ แล้วเก็บ "URL path" ลง DB
+# (ระบบไม่เก็บ marker "attached" หรือ boolean อีกแล้ว — หลักฐานทุกชิ้นต้องเปิดดูรูปได้จริง)
+_DEMO_PNG_B64 = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def _demo_photo(prefix: str) -> str:
+    """สร้างไฟล์รูปตัวอย่างจริง 1 ไฟล์ คืน URL path เช่น "/uploads/dlv-xxxx.png" """
+    from app.services.storage import save_photo_b64
+
+    return save_photo_b64(_DEMO_PNG_B64, prefix)
 
 SEED_USERS = [
     ("D01", "สมชาย ใจดี", "0810000001", Role.DRIVER, True),
@@ -46,9 +63,10 @@ def run():
         db.commit()
 
         seed_trips(db)
-        print(
-            f"Seed เสร็จ: users={db.query(User).count()} vehicles={db.query(Vehicle).count()} "
-            f"trips={db.query(Trip).count()} corrections={db.query(Correction).count()} (รหัสผ่าน: 1234)"
+        logger.info(
+            "Seed เสร็จ: users=%s vehicles=%s trips=%s corrections=%s (รหัสผ่าน: 1234)",
+            db.query(User).count(), db.query(Vehicle).count(),
+            db.query(Trip).count(), db.query(Correction).count(),
         )
     finally:
         db.close()
@@ -70,16 +88,19 @@ def seed_trips(db):
     db.add(t1); db.flush()
     drops1 = [
         Drop(trip_id=t1.id, seq=1, name="ลำปาง → บางนา", origin="ลำปาง", destination="บจก. รุ่งเรือง (บางนา)", allowance=300, revenue=4285.71,
-             delivered=True, photo="attached", tarp="attached", gps="13.66840,100.61000",
+             delivered=True, photo=_demo_photo("dlv"), tarp=_demo_photo("tarp"), gps="13.66840,100.61000",
              delivered_at=now - timedelta(minutes=10)),
         Drop(trip_id=t1.id, seq=2, name="บางนา → พระราม 9", origin="บางนา", destination="เซ็นทรัล (พระราม 9)", allowance=350, revenue=5000.0),
         Drop(trip_id=t1.id, seq=3, name="พระราม 9 → ลาดพร้าว", origin="พระราม 9", destination="โลตัส (ลาดพร้าว)", allowance=300, revenue=4285.71),
     ]
     db.add_all(drops1); db.flush()
-    # บิล OCR Draft (approved=False) — รอ Supervisor กดยืนยันใน Approval Center
+    # บิล Draft (approved=False) — ไม่มี OCR แล้ว: ยอด 0 + ไม่มีวันที่ + มีรูปจริงให้เปิดดู
+    # Supervisor ต้องเปิดรูปในศูนย์อนุมัติแล้วคีย์ยอดเงิน/วันที่เอง
     db.add_all([
-        Receipt(drop_id=drops1[0].id, kind=ReceiptKind.FUEL, amount=1850, date="10 ก.ค. 69", approved=False),
-        Receipt(drop_id=drops1[0].id, kind=ReceiptKind.TOLL, amount=240, date="10 ก.ค. 69", approved=False),
+        Receipt(drop_id=drops1[0].id, kind=ReceiptKind.FUEL, amount=0, date=None,
+                approved=False, photo=_demo_photo("rcpt")),
+        Receipt(drop_id=drops1[0].id, kind=ReceiptKind.TOLL, amount=0, date=None,
+                approved=False, photo=_demo_photo("rcpt")),
     ])
 
     # ---- T-002: ORANGE 2 จุด (จ่ายงานแล้ว กำลังไปขึ้นของ) ----
@@ -103,11 +124,14 @@ def seed_trips(db):
              penalty=0, bonus=0)
     db.add(h); db.flush()
     hd = Drop(trip_id=h.id, seq=1, name="นนทบุรี → ศรีนครินทร์", origin="นนทบุรี", destination="ซีคอน (ศรีนครินทร์)", allowance=300, revenue=4285.71,
-              delivered=True, photo="attached", tarp="attached", gps="13.64590,100.64690")
+              delivered=True, photo=_demo_photo("dlv"), tarp=_demo_photo("tarp"), gps="13.64590,100.64690")
     db.add(hd); db.flush()
     db.add_all([
-        Receipt(drop_id=hd.id, kind=ReceiptKind.FUEL, amount=980, approved=True),
-        Receipt(drop_id=hd.id, kind=ReceiptKind.TOLL, amount=120, approved=True),
+        # บิลของทริปที่ปิดแล้ว — คนคุมงานคีย์ยอด/วันที่ไปแล้ว (approved=True)
+        Receipt(drop_id=hd.id, kind=ReceiptKind.FUEL, amount=980, date="2026-07-10",
+                approved=True, photo=_demo_photo("rcpt")),
+        Receipt(drop_id=hd.id, kind=ReceiptKind.TOLL, amount=120, date="2026-07-10",
+                approved=True, photo=_demo_photo("rcpt")),
     ])
     db.add(Correction(
         code="C-01", trip_id=h.id, requested_by=sv.id, requester_name=f"{sv.name} ({sv.emp_id})",

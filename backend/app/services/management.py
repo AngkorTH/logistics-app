@@ -7,9 +7,10 @@ from collections import defaultdict
 from sqlalchemy.orm import Session
 
 from app.models import Trip, User, Vehicle
-from app.models.enums import Role
+from app.models.enums import Role, VehicleStatus
 from app.services.audit import who_label, write_audit
 from app.services.finance import compute_finance
+from app.services.notification import push_notification
 
 
 class ManageError(Exception):
@@ -118,6 +119,9 @@ def monthly_trip_rows(db: Session, driver: User, year: int, month: int) -> list[
                     "allowance": round(d.allowance, 2),
                     "delivered": d.delivered,
                     "delivered_at": d.delivered_at.isoformat() if d.delivered_at else None,
+                    "loaded_photo": d.loaded_photo,
+                    "photo": d.photo,
+                    "tarp": d.tarp,
                 }
                 for d in sorted(t.drops, key=lambda x: x.seq)
             ],
@@ -147,6 +151,37 @@ def update_vehicle(db: Session, vehicle: Vehicle, actor: User, changes: dict) ->
     db.commit()
     db.refresh(vehicle)
     write_audit(db, who_label(actor), "แก้ข้อมูลรถ", vehicle.plate, "")
+    return vehicle
+
+
+def set_vehicle_status(
+    db: Session, vehicle: Vehicle, actor: User, new_status: VehicleStatus, reason: str
+) -> Vehicle:
+    """แอดมินสั่งรถเข้า/ออกจากการซ่อมด้วยมือ (สิทธิ์บังคับที่ router = require_admin)
+
+    ต่างจาก flow เดิมที่รถเข้าซ่อมได้ทางเดียวคือ "คนขับแจ้งเหตุ" — อันนี้แอดมินกดเอง
+    รถสถานะ MAINTENANCE จะถูกล็อกไม่ให้จ่ายงาน (เช็กอยู่แล้วใน assign endpoint)
+    """
+    if not reason or not reason.strip():
+        raise ManageError("ต้องระบุเหตุผลการเปลี่ยนสถานะรถเสมอ")
+    if vehicle.status is new_status:
+        raise ManageError(f"รถ {vehicle.plate} อยู่ในสถานะนี้อยู่แล้ว")
+
+    old = vehicle.status
+    vehicle.status = new_status
+    db.commit()
+    db.refresh(vehicle)
+
+    label = "แจ้งรถเข้าซ่อม" if new_status is VehicleStatus.MAINTENANCE else "ปลดล็อกรถกลับมาใช้งาน"
+    write_audit(
+        db, who_label(actor), label, vehicle.plate,
+        f"{old.value} → {new_status.value} · เหตุผล: {reason.strip()}",
+    )
+    push_notification(
+        db, "VEHICLE_STATUS",
+        f"{label} · {vehicle.plate}",
+        f"{who_label(actor)} เปลี่ยนสถานะรถเป็น {new_status.value} · เหตุผล: {reason.strip()}",
+    )
     return vehicle
 
 

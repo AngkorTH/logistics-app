@@ -13,11 +13,13 @@ from app.models import Role, User
 from app.security import hash_password
 
 
-# รูป PNG 1x1 สำหรับเทสต์ — ใช้เป็นรูปหน้าปัดไมล์/สลิปที่ระบบบังคับให้แนบ
+# รูป PNG 1x1 สำหรับเทสต์ — ใช้เป็นรูปหน้าปัดไมล์/บิล/ผ้าใบ/ส่งของ ที่ระบบบังคับให้แนบทุกจุด
 ODO_PHOTO = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
 )
+# ชื่อกลางๆ สำหรับ "รูปหลักฐานอะไรก็ได้" — หลักฐานทุกชิ้นต้องเป็นไฟล์รูปจริงแล้ว
+PHOTO = ODO_PHOTO
 
 
 @pytest.fixture()

@@ -20,7 +20,7 @@ from app.services.state_machine import (
     finish_loading,
     record_delivery,
 )
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 
 
 @pytest.fixture()
@@ -42,7 +42,7 @@ def _mk_trip(db, driver, code="T-200", n_drops=2, allowance=300):
     db.add(trip)
     db.commit()
     for i in range(1, n_drops + 1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=allowance))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=allowance))
     db.commit()
     db.refresh(trip)
     return trip
@@ -51,13 +51,13 @@ def _mk_trip(db, driver, code="T-200", n_drops=2, allowance=300):
 def _run_to_delivered(db, trip, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     # 1 ขาต่อครั้ง: จบขาแล้วคนขับกลับเป็น WHITE ต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อนวิ่งขาถัดไป
     for i, d in enumerate(trip.drops):
         if i > 0:
             assign_trip(db, trip, "1กก-1234", supervisor)
-            finish_loading(db, trip, driver, 13.75, 100.5)
-        record_delivery(db, d, driver, 13.8, 100.6)
+            finish_loading(db, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
+        record_delivery(db, d, driver, 13.8, 100.6, photo_b64=PHOTO)
     # flow ใหม่: เที่ยวหลักจบสมบูรณ์เมื่อ Supervisor กด "จบเที่ยว" เท่านั้น
     complete_trip(db, trip, supervisor)
 

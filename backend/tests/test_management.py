@@ -120,8 +120,8 @@ def trip_with_drops(db_session):
     db_session.refresh(trip)
     from app.models import Drop
     db_session.add_all([
-        Drop(trip_id=trip.id, seq=1, name="A", allowance=300),
-        Drop(trip_id=trip.id, seq=2, name="B", allowance=200),
+        Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="A", allowance=300),
+        Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=2, name="B", allowance=200),
     ])
     db_session.commit()
     db_session.refresh(trip)
@@ -209,8 +209,13 @@ def test_monthly_history_rbac_and_data(client, staff):
     _closed_trip(db, d01, TripDifficulty.EASY, 120, "T-M1")
     _closed_trip(db, d01, TripDifficulty.HARD, 90, "T-M2")
 
-    # Driver ดูไม่ได้
-    assert client.get(f"/users/{d01.id}/history/monthly",
+    # Driver ดู "ของตัวเอง" ได้ (ประวัติงาน/เงินรายเดือนของตัวเอง)
+    own = client.get(f"/users/{d01.id}/history/monthly", headers=login(client, "D01"))
+    assert own.status_code == 200, own.text
+    assert own.json()["driver_id"] == d01.id
+    # แต่ดูของคนขับคนอื่นไม่ได้ → 403
+    other = db.query(User).filter(User.emp_id == "D04").first()
+    assert client.get(f"/users/{other.id}/history/monthly",
                       headers=login(client, "D01")).status_code == 403
     # Supervisor ดูได้
     r = client.get(f"/users/{d01.id}/history/monthly", headers=login(client, "SV01"))

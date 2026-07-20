@@ -38,36 +38,31 @@ def _guard_not_frozen(trip: Trip) -> None:
         )
 
 
-def _fake_ocr(kind: ReceiptKind, raw_amount: float | None) -> float:
-    """จำลอง AI OCR: คืนยอดที่ 'อ่านได้' จากบิล (stub)
-
-    ของจริงจะส่งรูปเข้า OCR engine — ตอนนี้รับ raw_amount ที่ client ส่งมา
-    (จำลองผลอ่าน) ถ้าไม่มีให้เป็น 0 เพื่อให้ Supervisor กรอกเอง
-    """
-    return round(float(raw_amount), 2) if raw_amount else 0.0
-
-
 def upload_receipt(
     db: Session,
     drop: Drop,
     actor,
     kind: ReceiptKind,
     *,
-    ocr_amount: float | None = None,
-    ocr_date: str | None = None,
     captured_at=None,  # เวลาอัปโหลดจริงตอนออฟไลน์ (Offline Auto-Sync) — None = ตอนนี้
-    photo_b64: str | None = None,  # รูปถ่ายใบเสร็จจริง (Phase 4)
+    photo_b64: str | None = None,  # รูปถ่ายใบเสร็จจริง (บังคับ)
     liters: float | None = None,   # จำนวนลิตรที่เติม (บิลน้ำมัน) — ใช้คิด km/L ตอนจบงาน
 ) -> Receipt:
     """อัปบิลน้ำมัน/ทางหลวงรายจุดส่ง → สร้าง/อัปเดต Receipt เป็น Draft (approved=False)
 
     - 1 จุดมีบิลได้อย่างละ 1 ใบ (UniqueConstraint drop_id+kind) — อัปซ้ำถือเป็นการแก้ draft เดิม
-    - OCR ตั้งยอดเป็น draft เท่านั้น ยังไม่นับเข้ายอดจริงจนกว่า Supervisor จะ approve
+    - **ไม่มี OCR**: ยอด = 0 · วันที่ = None เสมอ รอ Supervisor เปิดรูปแล้วพิมพ์เองตอนยืนยัน
+    - รูปบิลบังคับ — เก็บ URL ไฟล์จริงลง DB
     """
     trip = drop.trip
     _guard_not_frozen(trip)
 
-    amount = _fake_ocr(kind, ocr_amount)
+    from app.services.storage import save_photo_b64
+
+    photo_path = save_photo_b64(photo_b64, "rcpt")
+    if not photo_path:
+        raise EvidenceError("ต้องแนบรูปบิลจริงมาด้วยเสมอ — ไม่มีรูป คนคุมงานตรวจยอดไม่ได้")
+
     receipt = (
         db.query(Receipt)
         .filter(Receipt.drop_id == drop.id, Receipt.kind == kind)
@@ -77,18 +72,14 @@ def upload_receipt(
         receipt = Receipt(drop_id=drop.id, kind=kind)
         db.add(receipt)
     # อัปโหลดใหม่/ซ้ำ = รีเซ็ตกลับเป็น draft ให้ Supervisor ตรวจใหม่เสมอ
-    from app.services.storage import save_photo_b64
-
-    receipt.amount = amount
-    receipt.date = ocr_date
+    receipt.amount = 0.0   # ปิด OCR — ยอดจริงมาจากมือ Supervisor ตอน approve
+    receipt.date = None    # ปิด OCR — วันที่บนบิลก็มาจากมือ Supervisor
     receipt.approved = False
     if liters is not None:
         if liters < 0:
             raise EvidenceError("จำนวนลิตรติดลบไม่ได้")
         receipt.liters = round(float(liters), 2)
-    photo_path = save_photo_b64(photo_b64, "rcpt")
-    if photo_path:
-        receipt.photo = photo_path
+    receipt.photo = photo_path
     if captured_at is not None:
         receipt.created_at = captured_at  # คงเวลาที่กดถ่าย/อัปจริง ไม่ใช่เวลา sync
     db.commit()
@@ -96,47 +87,54 @@ def upload_receipt(
 
     write_audit(
         db, who_label(actor), "อัปโหลดบิล", trip.code,
-        f"จุด {drop.seq} · {_KIND_LABEL[kind]} · OCR draft {amount:.2f} (รออนุมัติ)",
+        f"จุด {drop.seq} · {_KIND_LABEL[kind]} · รูป {photo_path} (รอคนคุมงานกรอกยอด/วันที่)",
     )
-    # แจ้งเตือนเข้ากล่องจดหมายทีมคุมงาน: มีบิลใหม่รอตรวจ/ยืนยันยอด
+    # แจ้งเตือนเข้ากล่องจดหมายทีมคุมงาน: มีบิลใหม่รอเปิดรูปดูแล้วกรอกยอด
     push_notification(
-        db, "BILL_UPLOADED", f"บิลใหม่รอตรวจ · {trip.code}",
-        f"จุด {drop.seq} · {_KIND_LABEL[kind]} · ยอด OCR {amount:.2f} (รอยืนยัน)", trip.id,
+        db, "BILL_UPLOADED", f"บิลใหม่รอกรอกยอด · {trip.code}",
+        f"จุด {drop.seq} · {_KIND_LABEL[kind]} · เปิดรูปบิลแล้วกรอกยอดเงิน + วันที่", trip.id,
     )
     return receipt
 
 
-def log_fuel(
+def log_trip_receipt(
     db: Session,
     trip: Trip,
     actor,
+    kind: ReceiptKind,
     *,
-    liters: float,
-    photo_b64: str | None = None,   # รูปสลิปน้ำมัน (Base64)
-    ocr_amount: float | None = None,
-    ocr_date: str | None = None,
+    photo_b64: str | None = None,   # รูปบิล/สลิป (Base64) — บังคับ
+    liters: float | None = None,    # บังคับเฉพาะบิลน้ำมัน (ใช้คิด km/L)
     captured_at=None,
 ) -> Receipt:
-    """คนขับแจ้งเติมน้ำมันระหว่างทริป → Receipt (FUEL) ผูกกับทริปตรงๆ ไม่ผูกจุดส่ง
+    """อัปบิลระหว่างทาง (Mid-Trip) → Receipt ผูกกับทริปตรงๆ ไม่ผูกจุดส่ง
 
-    ต่างจาก upload_receipt: เติมได้หลายครั้งต่อ 1 ทริป (ไม่มี UniqueConstraint)
-    จำนวนลิตรทุกใบจะถูกรวมตอนจบงานเพื่อคิด km/L · ยอดเงินยังเป็น draft รอ Supervisor อนุมัติ
+    ใช้ได้ตลอดเวลาที่คนขับยังวิ่งงานอยู่ (🟠 ไปขึ้นของ และ 🟢 กำลังไปส่ง) —
+    แวะปั๊ม/ด่านเมื่อไหร่ก็ถ่ายส่งได้ทันที ไม่ต้องรอส่งของเสร็จ
+
+    ต่างจาก upload_receipt (รายจุดส่ง): ไม่มี UniqueConstraint → อัปกี่ใบก็ได้ต่อทริป
+    **ไม่มี OCR**: ยอดเงิน 0 · วันที่ None รอ Supervisor เปิดรูปแล้วคีย์เองตอนยืนยัน
     """
     _guard_not_frozen(trip)
-    if liters is None or liters <= 0:
-        raise EvidenceError("ต้องระบุจำนวนลิตรที่เติม (มากกว่า 0)")
+    if kind is ReceiptKind.FUEL and (liters is None or liters <= 0):
+        raise EvidenceError("บิลน้ำมันต้องระบุจำนวนลิตรที่เติม (มากกว่า 0)")
 
     from app.services.storage import save_photo_b64
+
+    prefix = "fuel" if kind is ReceiptKind.FUEL else "toll"
+    photo_path = save_photo_b64(photo_b64, prefix)
+    if not photo_path:
+        raise EvidenceError(f"ต้องแนบรูป{_KIND_LABEL[kind]}จริงมาด้วยเสมอ")
 
     receipt = Receipt(
         trip_id=trip.id,
         drop_id=None,
-        kind=ReceiptKind.FUEL,
-        amount=_fake_ocr(ReceiptKind.FUEL, ocr_amount),
-        liters=round(float(liters), 2),
-        date=ocr_date,
+        kind=kind,
+        amount=0.0,      # ปิด OCR — Supervisor กรอกยอดเองตอน approve
+        liters=round(float(liters), 2) if liters else 0.0,
+        date=None,       # ปิด OCR — Supervisor กรอกวันที่บนบิลเอง
         approved=False,
-        photo=save_photo_b64(photo_b64, "fuel"),
+        photo=photo_path,
     )
     if captured_at is not None:
         receipt.created_at = captured_at
@@ -144,29 +142,51 @@ def log_fuel(
     db.commit()
     db.refresh(receipt)
 
+    detail = f"{receipt.liters:.2f} ลิตร · " if kind is ReceiptKind.FUEL else ""
     write_audit(
-        db, who_label(actor), "แจ้งเติมน้ำมัน", trip.code,
-        f"{receipt.liters:.2f} ลิตร · OCR draft {receipt.amount:.2f} (รออนุมัติ)",
+        db, who_label(actor), f"อัปบิลระหว่างทาง ({_KIND_LABEL[kind]})", trip.code,
+        f"{detail}แนบรูป {photo_path} (รอคนคุมงานกรอกยอด/วันที่)",
     )
     push_notification(
-        db, "FUEL_LOGGED", f"แจ้งเติมน้ำมัน · {trip.code}",
-        f"{receipt.liters:.2f} ลิตร · ยอด OCR {receipt.amount:.2f} (รอยืนยัน)", trip.id,
+        db, "BILL_UPLOADED", f"บิลใหม่ระหว่างทาง · {trip.code}",
+        f"{_KIND_LABEL[kind]} · {detail}เปิดรูปแล้วกรอกยอดเงิน + วันที่", trip.id,
     )
     return receipt
 
 
-def approve_receipt(db: Session, receipt: Receipt, actor, *, amount: float | None = None) -> Receipt:
-    """Supervisor ยืนยันยอดบิล (แก้ยอดได้ก่อน approve) → approved=True นับเข้ายอดจริง"""
+def log_fuel(db: Session, trip: Trip, actor, *, liters: float, photo_b64=None, captured_at=None):
+    """ทางลัดเดิมสำหรับ 'แจ้งเติมน้ำมัน' — เรียก log_trip_receipt ด้วย kind=FUEL
+
+    คงไว้เพื่อไม่ให้ endpoint /trips/{id}/fuel และคิว offline ที่ค้างอยู่พัง
+    """
+    return log_trip_receipt(
+        db, trip, actor, ReceiptKind.FUEL,
+        photo_b64=photo_b64, liters=liters, captured_at=captured_at,
+    )
+
+
+def approve_receipt(
+    db: Session, receipt: Receipt, actor, *, amount: float, date: str
+) -> Receipt:
+    """Supervisor ยืนยันบิล — **กรอกยอดเงิน + วันที่เองจากรูป** (แทน OCR) → นับเข้ายอดจริง
+
+    ทั้งสองค่าบังคับ: ไม่มี OCR มาเติมให้แล้ว ถ้าไม่กรอกก็ไม่มีข้อมูลบิล
+    """
     _guard_not_frozen(receipt.owner_trip)
-    if amount is not None:
-        receipt.amount = round(float(amount), 2)
+    if amount is None or amount < 0:
+        raise EvidenceError("ต้องกรอกยอดเงินบนบิล (ไม่ติดลบ)")
+    if not date or not date.strip():
+        raise EvidenceError("ต้องกรอกวันที่บนบิลด้วยเสมอ")
+
+    receipt.amount = round(float(amount), 2)
+    receipt.date = date.strip()
     receipt.approved = True
     db.commit()
     db.refresh(receipt)
 
     write_audit(
-        db, who_label(actor), "อนุมัติบิล", receipt.owner_trip.code,
-        f"{_where(receipt)} · {_KIND_LABEL[receipt.kind]} · ยืนยัน {receipt.amount:.2f}",
+        db, who_label(actor), "อนุมัติบิล (กรอกมือ)", receipt.owner_trip.code,
+        f"{_where(receipt)} · {_KIND_LABEL[receipt.kind]} · ยอด {receipt.amount:.2f} · วันที่บิล {receipt.date}",
     )
     return receipt
 
@@ -196,14 +216,21 @@ def edit_receipt_amount(db: Session, receipt: Receipt, actor, new_amount: float,
 
 
 def upload_tarp(db: Session, drop: Drop, actor, *, photo_b64: str | None = None) -> Drop:
-    """อัปรูปผ้าใบรายจุดส่ง → เก็บรูปจริง (Phase 4) · soft — ไม่บังคับก่อนเปลี่ยนสถานะ"""
+    """อัปรูปผ้าใบรายจุดส่ง → เก็บ URL ไฟล์รูปจริงลง DB
+
+    soft — ไม่บังคับก่อนเปลี่ยนสถานะ (แค่เตือน) แต่ถ้า "จะอัป" ต้องมีรูปจริง
+    ไม่มี marker "attached" อีกแล้ว
+    """
     from app.services.storage import save_photo_b64
 
     _guard_not_frozen(drop.trip)
-    drop.tarp = save_photo_b64(photo_b64, "tarp") or "attached"
+    photo_path = save_photo_b64(photo_b64, "tarp")
+    if not photo_path:
+        raise EvidenceError("ต้องแนบรูปผ้าใบจริงมาด้วย — ไม่มีรูป บันทึกไม่ได้")
+    drop.tarp = photo_path
     db.commit()
     db.refresh(drop)
     write_audit(
-        db, who_label(actor), "อัปโหลดรูปผ้าใบ", drop.trip.code, f"จุด {drop.seq}",
+        db, who_label(actor), "อัปโหลดรูปผ้าใบ", drop.trip.code, f"จุด {drop.seq} · {photo_path}",
     )
     return drop

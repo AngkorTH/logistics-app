@@ -146,9 +146,13 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
           </div>
         </div>
         {t.odometer_end != null && (
-          <div className="ml-auto text-right">
-            <div className="text-[11px] text-slate-400">เลขไมล์จบ</div>
-            <div className="text-base font-bold text-slate-700">{t.odometer_end.toLocaleString('th-TH')} กม.</div>
+          <div className="ml-auto flex items-center gap-2">
+            <div className="text-right">
+              <div className="text-[11px] text-slate-400">เลขไมล์จบ</div>
+              <div className="text-base font-bold text-slate-700">{t.odometer_end.toLocaleString('th-TH')} กม.</div>
+            </div>
+            {/* รูปหน้าปัดตอนจบงาน — บังคับถ่ายคู่กับเลขไมล์จบ ให้แอดมินเทียบย้อนหลังได้ */}
+            <PhotoThumb src={t.odometer_end_photo} label="หน้าปัดไมล์ตอนจบงาน" onZoom={setZoom} size="w-16 h-16" />
           </div>
         )}
       </div>
@@ -218,9 +222,13 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
             </div>
             {/* Phase 4: รูปหลักฐานจริง — คลิกเพื่อขยายดูเต็มจอ */}
             <div className="flex items-center gap-2 mt-2">
+              {/* รูปของที่ขนขึ้นรถ — คนขับถ่ายตอนกดยืนยัน "ขนของขึ้นเสร็จ" (🟠 → 🟢) */}
+              <PhotoThumb src={d.loaded_photo} label={`ของที่ขน จุด ${d.seq}`} onZoom={setZoom} />
               <PhotoThumb src={d.tarp} label={`ผ้าใบ จุด ${d.seq}`} onZoom={setZoom} />
               <PhotoThumb src={d.photo} label={`ส่งของ จุด ${d.seq}`} onZoom={setZoom} />
-              {!d.tarp && !d.photo && <span className="text-[11px] text-slate-300">ยังไม่มีรูปหลักฐาน</span>}
+              {!d.loaded_photo && !d.tarp && !d.photo && (
+                <span className="text-[11px] text-slate-300">ยังไม่มีรูปหลักฐาน</span>
+              )}
               {d.gps && <span className="text-[11px] text-slate-400 ml-auto">📍 {d.gps}</span>}
             </div>
             {d.receipts.map((r) => (
@@ -230,7 +238,7 @@ export default function TripDetailModal({ tripId, onClose, onDone, isSuperAdmin 
                   <span>
                     {KIND_TH[r.kind]} {money(r.amount)}
                     {r.liters > 0 && ` · ${r.liters.toFixed(2)} ลิตร`}
-                    {r.date && ` (${r.date})`} — {r.approved ? 'อนุมัติแล้ว' : '🤖 OCR Draft รอตรวจ'}
+                    {r.date && ` (${r.date})`} — {r.approved ? 'อนุมัติแล้ว' : '🧾 รอคีย์ยอด/วันที่'}
                   </span>
                 </span>
                 {!t.frozen && (

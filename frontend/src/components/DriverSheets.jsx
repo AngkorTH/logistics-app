@@ -208,10 +208,12 @@ export function ReportIssueSheet({ onClose, onSubmit, busy }) {
 // ไม่มีช่อง "เลขไมล์เริ่ม" แล้ว — บันทึกไปตั้งแต่ตอนกดเริ่มงาน · ระบบคิด km/L ให้เอง
 export function EndTripSheet({ onClose, onSubmit, busy, odometerStart }) {
   const [odo, setOdo] = useState('')
+  const [photo, setPhoto] = useState(null)   // dataURL รูปหน้าปัดไมล์ตอนจบ (บังคับ)
   const n = Number(odo)
   // เลขไมล์จบต้องไม่น้อยกว่าเลขไมล์เริ่มของทริปนี้
   const tooLow = odometerStart != null && n > 0 && n < odometerStart
-  const valid = n > 0 && !tooLow
+  // บังคับ 2 อย่าง: เลขไมล์จบ + รูปหน้าปัด (ระบบเก็บรูปจริงไว้ให้แอดมินเทียบเลขย้อนหลัง)
+  const valid = n > 0 && !tooLow && !!photo
 
   return (
     <BottomSheet title="🏁 จบงาน — บันทึกเลขไมล์จบ" onClose={onClose}>
@@ -233,52 +235,138 @@ export function EndTripSheet({ onClose, onSubmit, busy, odometerStart }) {
             ⚠️ เลขไมล์จบน้อยกว่าเลขไมล์เริ่ม — ตรวจเลขบนหน้าปัดอีกครั้ง
           </div>
         )}
-        <button disabled={busy || !valid} onClick={() => onSubmit({ odometer_end: n })}
+
+        {/* 📷 รูปหน้าปัดไมล์ตอนจบ — บังคับ (หลักฐานคู่กับเลขที่พิมพ์) */}
+        {photo && <img src={photo} alt="หน้าปัดไมล์ตอนจบ" className="w-full max-h-48 object-contain rounded-lg ring-1 ring-slate-200 bg-slate-50" />}
+        <button onClick={async () => { const img = await pickImage(); if (img) setPhoto(img) }}
+          className="w-full py-3.5 rounded-xl bg-white ring-1 ring-slate-300 text-slate-700 text-base font-bold active:scale-[0.98] transition">
+          {photo ? '🔄 ถ่ายรูปหน้าปัดใหม่' : '📷 ถ่ายรูปหน้าปัดไมล์ (บังคับ)'}
+        </button>
+
+        <button disabled={busy || !valid} onClick={() => onSubmit({ odometer_end: n, odometer_photo_b64: photo })}
           className="w-full py-5 rounded-2xl bg-slate-800 hover:bg-slate-900 text-white text-xl font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
           {busy ? '⏳ กำลังบันทึก…' : '🏁 ยืนยันจบงาน'}
         </button>
         {!valid && !tooLow && (
-          <div className="text-center text-xs text-slate-400">ต้องกรอกเลขไมล์จบก่อนจึงจะจบงานได้</div>
+          <div className="text-center text-xs text-slate-400">
+            ต้องกรอกเลขไมล์จบ <b>และถ่ายรูปหน้าปัด</b> ก่อนจึงจะจบงานได้
+          </div>
         )}
       </div>
     </BottomSheet>
   )
 }
 
-/* ---------- บันทึกเติมน้ำมันระหว่างทาง (Refuel) ---------- */
-// บังคับกรอก 2 อย่าง: จำนวนลิตร + รูปสลิปน้ำมัน · ลิตรทุกใบถูกรวมไปคิด km/L ตอนจบงาน
-export function RefuelSheet({ onClose, onSubmit, busy }) {
-  const [liters, setLiters] = useState('')
-  const [photo, setPhoto] = useState(null)   // dataURL รูปสลิป (บังคับ)
-  const valid = Number(liters) > 0 && !!photo
+/* ---------- ✅ ยืนยัน "ขนของขึ้นเสร็จ" (🟠 → 🟢) ---------- */
+// ด่านกันกดพลาด: ต้องถ่ายรูปของที่ขนขึ้นรถก่อน ปุ่มยืนยันถึงจะปลดล็อก
+export function FinishLoadingSheet({ onClose, onSubmit, busy, leg }) {
+  const [photo, setPhoto] = useState(null)   // dataURL รูปของบนรถ (บังคับ)
 
   return (
-    <BottomSheet title="⛽ บันทึกเติมน้ำมัน" onClose={onClose}>
+    <BottomSheet title="✅ ยืนยันขนของขึ้นเสร็จ" onClose={onClose}>
       <div className="space-y-3">
+        <div className="rounded-xl bg-amber-50 ring-1 ring-amber-300 text-amber-800 text-sm px-3 py-2.5">
+          ⚠️ กดยืนยันแล้วสถานะจะเปลี่ยนเป็น <b>🟢 กำลังไปส่ง</b> และระบบจะบันทึกพิกัด GPS ต้นทาง
+          — ตรวจให้แน่ใจว่าขนของขึ้นรถเรียบร้อยจริงแล้ว
+        </div>
+        {leg && (
+          <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 px-3 py-2.5 text-center">
+            <div className="text-[11px] text-slate-400">งานขานี้</div>
+            <div className="text-base font-bold text-slate-700">
+              {leg.origin || '—'}<span className="text-orange-500 mx-1.5">➜</span>{leg.destination || leg.name}
+            </div>
+          </div>
+        )}
+
         <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 text-slate-600 text-sm px-3 py-2.5">
-          กรอกจำนวนลิตรตามที่ปั๊มเติมจริง แล้วถ่ายรูปสลิปแนบ —
-          ระบบจะรวมลิตรทั้งทริปไปคิด <b>อัตราสิ้นเปลือง (กม./ลิตร)</b> ตอนจบงาน
+          ถ่ายรูป <b>ของที่ขนขึ้นรถแล้ว</b> ให้เห็นสินค้าบนรถชัดๆ (บังคับ) —
+          คนคุมงานและแอดมินใช้ตรวจย้อนหลังได้
         </div>
-        <div>
-          <label className="block text-sm font-semibold text-slate-600 mb-1">จำนวนลิตร (บังคับ)</label>
-          <input type="number" inputMode="decimal" min="0" step="0.01" value={liters}
-            onChange={(e) => setLiters(e.target.value)} placeholder="เช่น 40.5"
-            className="w-full border border-slate-300 rounded-xl px-4 py-3 text-2xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-200" />
-        </div>
-        {photo && <img src={photo} alt="สลิปน้ำมัน" className="w-full max-h-48 object-contain rounded-lg ring-1 ring-slate-200 bg-slate-50" />}
+        {photo && <img src={photo} alt="ของที่ขนขึ้นรถ" className="w-full max-h-56 object-contain rounded-lg ring-1 ring-slate-200 bg-slate-50" />}
         <button onClick={async () => { const img = await pickImage(); if (img) setPhoto(img) }}
           className={`w-full py-3.5 rounded-xl text-base font-bold active:scale-[0.98] transition ${
             photo ? 'bg-slate-100 text-slate-500' : 'bg-white ring-1 ring-slate-300 text-slate-700'
           }`}>
-          {photo ? '🔄 ถ่ายสลิปใหม่' : '📷 ถ่ายรูปสลิปน้ำมัน (บังคับ)'}
+          {photo ? '🔄 ถ่ายรูปของใหม่' : '📷 ถ่ายรูปของที่ขนขึ้นรถ (บังคับ)'}
+        </button>
+
+        <div className="flex gap-2 pt-1">
+          <button onClick={onClose}
+            className="flex-1 py-4 rounded-2xl bg-white ring-1 ring-slate-300 text-slate-600 text-base font-bold active:scale-[0.98] transition">
+            ยกเลิก
+          </button>
+          <button disabled={busy || !photo}
+            onClick={() => onSubmit({ loaded_photo_b64: photo })}
+            className="flex-[2] py-4 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white text-lg font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+            {busy ? '⏳ กำลังบันทึก…' : '✅ ยืนยัน ขึ้นของเสร็จแล้ว'}
+          </button>
+        </div>
+        {!photo && (
+          <div className="text-center text-xs text-slate-400">ต้องถ่ายรูปของที่ขนขึ้นรถก่อน จึงจะยืนยันได้</div>
+        )}
+      </div>
+    </BottomSheet>
+  )
+}
+
+/* ---------- 🧾 อัปบิลระหว่างทาง (Mid-Trip) — น้ำมัน / ทางหลวง ---------- */
+// เปิดใช้ได้ตลอดที่ยังวิ่งงาน (🟠 และ 🟢) · อัปกี่ใบก็ได้ ไม่ต้องรอส่งของเสร็จ
+// บิลน้ำมันบังคับกรอกลิตรด้วย (เอาไปคิด กม./ลิตร ตอนจบงาน) · บิลทางหลวงไม่ต้อง
+export function TripReceiptSheet({ onClose, onSubmit, busy }) {
+  const [kind, setKind] = useState('FUEL')
+  const [liters, setLiters] = useState('')
+  const [photo, setPhoto] = useState(null)
+  const isFuel = kind === 'FUEL'
+  const valid = !!photo && (!isFuel || Number(liters) > 0)
+
+  const tab = (k, label) => (
+    <button key={k} onClick={() => setKind(k)}
+      className={`flex-1 py-3 rounded-xl text-base font-bold transition ${
+        kind === k ? 'bg-slate-800 text-white shadow' : 'bg-white ring-1 ring-slate-300 text-slate-600'
+      }`}>
+      {label}
+    </button>
+  )
+
+  return (
+    <BottomSheet title="🧾 อัปบิลระหว่างทาง" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="rounded-xl bg-slate-50 ring-1 ring-slate-200 text-slate-600 text-sm px-3 py-2.5">
+          แวะปั๊มหรือผ่านด่านเมื่อไหร่ ถ่ายบิลส่งได้เลย <b>ไม่ต้องรอส่งของเสร็จ</b> ·
+          ส่งได้หลายใบ · ยอดเงินคนคุมงานเป็นคนคีย์จากรูป
+        </div>
+        <div className="flex gap-2">{[tab('FUEL', '⛽ บิลน้ำมัน'), tab('TOLL', '🛣️ บิลทางหลวง')]}</div>
+
+        {isFuel && (
+          <div>
+            <label className="block text-sm font-semibold text-slate-600 mb-1">จำนวนลิตร (บังคับ)</label>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={liters}
+              onChange={(e) => setLiters(e.target.value)} placeholder="เช่น 40.5"
+              className="w-full border border-slate-300 rounded-xl px-4 py-3 text-2xl font-bold text-center outline-none focus:ring-2 focus:ring-blue-200" />
+            <div className="text-[11px] text-slate-400 mt-1 text-center">
+              ลิตรทุกใบถูกรวมไปคิดอัตราสิ้นเปลือง (กม./ลิตร) ตอนจบงาน
+            </div>
+          </div>
+        )}
+
+        {photo && <img src={photo} alt="บิล" className="w-full max-h-48 object-contain rounded-lg ring-1 ring-slate-200 bg-slate-50" />}
+        <button onClick={async () => { const img = await pickImage(); if (img) setPhoto(img) }}
+          className={`w-full py-3.5 rounded-xl text-base font-bold active:scale-[0.98] transition ${
+            photo ? 'bg-slate-100 text-slate-500' : 'bg-white ring-1 ring-slate-300 text-slate-700'
+          }`}>
+          {photo ? '🔄 ถ่ายบิลใหม่' : `📷 ถ่ายรูป${isFuel ? 'สลิปน้ำมัน' : 'บิลทางหลวง'} (บังคับ)`}
         </button>
         <button disabled={busy || !valid}
-          onClick={() => onSubmit({ liters: Number(liters), photo_b64: photo })}
+          onClick={() => onSubmit({
+            kind, photo_b64: photo, liters: isFuel ? Number(liters) : undefined,
+          })}
           className="w-full py-5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xl font-extrabold shadow-lg active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
-          {busy ? '⏳ กำลังบันทึก…' : '⛽ บันทึกการเติมน้ำมัน'}
+          {busy ? '⏳ กำลังส่ง…' : '🧾 ส่งบิลนี้'}
         </button>
         {!valid && (
-          <div className="text-center text-xs text-slate-400">ต้องกรอกจำนวนลิตร และแนบรูปสลิปก่อนส่ง</div>
+          <div className="text-center text-xs text-slate-400">
+            {isFuel ? 'ต้องกรอกจำนวนลิตร และแนบรูปสลิปก่อนส่ง' : 'ต้องแนบรูปบิลก่อนส่ง'}
+          </div>
         )}
       </div>
     </BottomSheet>

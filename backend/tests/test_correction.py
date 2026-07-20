@@ -14,7 +14,7 @@ from app.services.correction import (
     request_correction,
 )
 from app.services.evidence import approve_receipt, upload_receipt
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 from app.services.state_machine import (
     assign_trip,
     close_trip,
@@ -30,7 +30,7 @@ def _mk_trip(db, driver, n_drops=2):
     db.commit()
     db.refresh(trip)
     for i in range(1, n_drops + 1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=300))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=300))
     db.commit()
     db.refresh(trip)
     return trip
@@ -39,7 +39,7 @@ def _mk_trip(db, driver, n_drops=2):
 def _run_to_green(db, trip, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
 
 
 @pytest.fixture()
@@ -73,16 +73,17 @@ def test_close_freezes_and_snapshots_amounts(db_session, driver, supervisor):
     trip = _mk_trip(db_session, driver, n_drops=2)
     _run_to_green(db_session, trip, driver, supervisor)
 
-    r = upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.FUEL, ocr_amount=1200)
-    approve_receipt(db_session, r, supervisor)
-    t = upload_receipt(db_session, trip.drops[1], supervisor, ReceiptKind.TOLL, ocr_amount=80)
-    approve_receipt(db_session, t, supervisor)
+    # Supervisor เปิดรูปบิลแล้วคีย์ยอด + วันที่เอง (ปิด OCR แล้ว)
+    r = upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.FUEL, photo_b64=PHOTO)
+    approve_receipt(db_session, r, supervisor, amount=1200, date="2026-07-10")
+    t = upload_receipt(db_session, trip.drops[1], supervisor, ReceiptKind.TOLL, photo_b64=PHOTO)
+    approve_receipt(db_session, t, supervisor, amount=80, date="2026-07-10")
 
     for i, d in enumerate(trip.drops):
         if i > 0:  # ขาถัดไปต้องให้คนคุมงานจ่ายงานย่อยใหม่ก่อน
             assign_trip(db_session, trip, "1กก-1234", supervisor)
-            finish_loading(db_session, trip, driver, 13.75, 100.5)
-        record_delivery(db_session, d, driver, 13.8, 100.6)
+            finish_loading(db_session, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
+        record_delivery(db_session, d, driver, 13.8, 100.6, photo_b64=PHOTO)
     complete_trip(db_session, trip, supervisor)   # Supervisor กดจบเที่ยวก่อน
     close_trip(db_session, trip, supervisor)
 

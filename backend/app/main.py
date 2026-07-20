@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.deps import require_admin
+from app.logging_config import setup_logging
 from app.middleware import AuditMiddleware
 from app.models import User
 from app.routers import (
@@ -24,6 +25,10 @@ from app.routers import (
     users,
     vehicles,
 )
+
+# ตั้ง logging ก่อนสร้างแอป — บังคับ stdout เป็น UTF-8 เพื่อให้ log ภาษาไทยไม่พังบน
+# console ที่ไม่ใช่ UTF-8 (Windows cp1252) และกัน UnicodeEncodeError ทำ request ล้ม
+setup_logging()
 
 app = FastAPI(title="Logistics ERP API", version="0.1.0")
 

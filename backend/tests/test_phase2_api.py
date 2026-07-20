@@ -11,7 +11,7 @@ from app.main import app
 from app.models import Drop, Role, Trip, User, Vehicle
 from app.models.enums import TripStatus
 from app.security import hash_password
-from tests.conftest import ODO_PHOTO
+from tests.conftest import PHOTO, ODO_PHOTO
 
 
 def login(client, ident, pw="1234"):
@@ -33,7 +33,7 @@ def seeded(db_session):
     trip = Trip(code="T-500", driver_id=d01.id, status=TripStatus.WHITE)
     db.add(trip)
     db.commit()
-    db.add(Drop(trip_id=trip.id, seq=1, name="จุด A", allowance=400))
+    db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด A", allowance=400))
     db.commit()
     return {"trip_id": trip.id, "driver_id": d01.id}
 
@@ -51,11 +51,11 @@ def _run_to_done(client, sv, drv, tid):
                           "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 200
     assert client.post(f"/trips/{tid}/finish-loading",
-                       json={"lat": 13.7, "lng": 100.5, "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO}, headers=drv).status_code == 200
+                       json={"lat": 13.7, "lng": 100.5, "odometer_start": 1000, "odometer_photo_b64": ODO_PHOTO, "loaded_photo_b64": ODO_PHOTO}, headers=drv).status_code == 200
     trip = client.get(f"/trips/{tid}", headers=sv).json()
     for d in trip["drops"]:
         assert client.post(f"/drops/{d['id']}/delivery",
-                           json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
+                           json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv).status_code == 200
     assert client.post(f"/trips/{tid}/complete", json={}, headers=sv).status_code == 200
 
 

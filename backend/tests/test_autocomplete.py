@@ -8,6 +8,8 @@
 from datetime import datetime, timezone
 
 import pytest
+
+from tests.conftest import ODO_PHOTO
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -59,7 +61,7 @@ def test_sub_trip_done_frees_driver_but_main_trip_stays_active(client, staff):
     """จบงานย่อย 1 ใบ → คนขับ WHITE (รองาน) ทันที แต่เที่ยวหลักยัง Active"""
     trip = _green_trip(staff, "T-AC1", n=2)
     drv = login(client, "D01")
-    r = client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    r = client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv)
     assert r.status_code == 200
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE      # คนขับว่างรับงานใหม่ได้เลย
@@ -72,10 +74,10 @@ def test_leg_done_needs_new_dispatch_and_no_auto_complete(client, staff):
     trip = _green_trip(staff, "T-AC2", n=2)
     drv = login(client, "D01")
     assert client.post(f"/drops/{trip.drops[0].id}/delivery",
-                       json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 200
+                       json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv).status_code == 200
     # ขาถัดไปวิ่งเองไม่ได้ — ต้องรอคนคุมงานจ่ายงานย่อยใหม่ (สถานะกลับไป WHITE แล้ว)
     assert client.post(f"/drops/{trip.drops[1].id}/delivery",
-                       json={"lat": 13.8, "lng": 100.6}, headers=drv).status_code == 400
+                       json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv).status_code == 400
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE
     assert trip.completed_at is None
@@ -132,14 +134,14 @@ def test_bills_reviewable_after_complete(client, staff):
     drv = login(client, "D01")
     sv = login(client, "SV01")
     # อัปบิลก่อนส่ง
-    r = client.post(f"/drops/{trip.drops[0].id}/receipt", json={"kind": "FUEL", "ocr_amount": 800}, headers=drv)
+    r = client.post(f"/drops/{trip.drops[0].id}/receipt", json={"kind": "FUEL", "photo_b64": ODO_PHOTO}, headers=drv)
     rid = r.json()["id"]
-    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv)
     client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)
     staff.refresh(trip)
     assert trip.status is TripStatus.WHITE and trip.frozen is False
     # ยังอนุมัติบิลได้ (ไม่ freeze)
-    assert client.post(f"/receipts/{rid}/approve", json={}, headers=sv).status_code == 200
+    assert client.post(f"/receipts/{rid}/approve", json={"amount": 800, "date": "2026-07-10"}, headers=sv).status_code == 200
     # แล้วคนคุมล็อกการเงิน → freeze
     r = client.post(f"/trips/{trip.id}/close", headers=sv)
     assert r.status_code == 200 and r.json()["frozen"] is True
@@ -155,7 +157,7 @@ def test_dispatch_queue_reflects_completion(client, staff):
     assert "D01" in [x["emp_id"] for x in q["green"]]
     # ส่งครบทุกจุด
     for d in trip.drops:
-        client.post(f"/drops/{d.id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+        client.post(f"/drops/{d.id}/delivery", json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv)
     # หลังส่งครบ: D01 ต้องย้ายไป white ไม่ค้างที่ green
     q2 = client.get("/dispatch/queue", headers=sv).json()
     assert "D01" in [x["emp_id"] for x in q2["white"]]
@@ -166,7 +168,7 @@ def test_dispatch_queue_reflects_completion(client, staff):
 def test_bill_upload_creates_notification(client, staff):
     trip = _green_trip(staff, "T-AC4", n=1)
     drv = login(client, "D01")
-    client.post(f"/drops/{trip.drops[0].id}/receipt", json={"kind": "FUEL", "ocr_amount": 500}, headers=drv)
+    client.post(f"/drops/{trip.drops[0].id}/receipt", json={"kind": "FUEL", "photo_b64": ODO_PHOTO}, headers=drv)
     rows = client.get("/notifications", headers=login(client, "SV01")).json()
     assert any(n["kind"] == "BILL_UPLOADED" and n["trip_id"] == trip.id for n in rows)
 
@@ -174,7 +176,7 @@ def test_bill_upload_creates_notification(client, staff):
 def test_complete_creates_notification(client, staff):
     trip = _green_trip(staff, "T-AC5", n=1)
     drv = login(client, "D01")
-    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv)
     client.post(f"/trips/{trip.id}/complete", json={}, headers=login(client, "SV01"))
     rows = client.get("/notifications", headers=login(client, "SV01")).json()
     assert any(n["kind"] == "TRIP_DONE" and n["trip_id"] == trip.id for n in rows)
@@ -190,7 +192,7 @@ def _frozen_trip(client, staff):
     trip = _green_trip(staff, "T-UF", n=1)
     drv = login(client, "D01")
     sv = login(client, "SV01")
-    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6}, headers=drv)
+    client.post(f"/drops/{trip.drops[0].id}/delivery", json={"lat": 13.8, "lng": 100.6, "photo_b64": ODO_PHOTO}, headers=drv)
     client.post(f"/trips/{trip.id}/complete", json={}, headers=sv)   # จบเที่ยว
     client.post(f"/trips/{trip.id}/close", headers=sv)   # ล็อกการเงิน
     staff.refresh(trip)

@@ -6,7 +6,7 @@
 """
 import pytest
 
-from tests.conftest import ODO_PHOTO
+from tests.conftest import PHOTO, ODO_PHOTO
 
 from app.models import Drop, Notification, Role, Trip, User
 from app.models.enums import InspectionStatus, TripStatus
@@ -37,26 +37,26 @@ def orange_trip(db_session, driver, supervisor):
     trip = Trip(code="T-100", driver_id=driver.id)
     db_session.add(trip)
     db_session.commit()
-    db_session.add(Drop(trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
+    db_session.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
     db_session.commit()
     assign_trip(db_session, trip, "1กก-1234", supervisor)
     return trip
 
 
-def test_all_pass_unlocks_finish_loading(db_session, orange_trip, driver):
+def test_all_pass_unlocks_finish_loading(db_session, orange_trip, driver, loaded_photo_b64=PHOTO):
     ins = submit_inspection(db_session, orange_trip, driver, {"tires": True, "lights": True}, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
     assert ins.status is InspectionStatus.PASSED
 
-    finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     assert orange_trip.status is TripStatus.GREEN
 
 
 def test_finish_loading_blocked_without_inspection(db_session, orange_trip, driver):
     with pytest.raises(TransitionError):
-        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     # force ก็ข้ามด่านตรวจรถไม่ได้ (hard-block)
     with pytest.raises(TransitionError):
-        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, force=True, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, force=True, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
 
 
 def test_defect_requires_photo(db_session, orange_trip, driver):
@@ -75,7 +75,7 @@ def test_defect_goes_pending_and_blocks(db_session, orange_trip, driver):
     assert db_session.query(Notification).filter_by(kind="INSPECTION_DEFECT").count() == 1
     # ปุ่มขนของขึ้นเสร็จถูกล็อก
     with pytest.raises(TransitionError):
-        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
 
 
 def test_approve_unlocks_reject_keeps_locked(db_session, orange_trip, driver, supervisor):
@@ -86,7 +86,7 @@ def test_approve_unlocks_reject_keeps_locked(db_session, orange_trip, driver, su
     review_inspection(db_session, ins, supervisor, approve=False, note="ห้ามวิ่ง")
     assert ins.status is InspectionStatus.REJECTED
     with pytest.raises(TransitionError):
-        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+        finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
 
     # ตรวจซ้ำใหม่ + supervisor อนุมัติ → ปลดล็อก
     ins2 = submit_inspection(
@@ -95,7 +95,7 @@ def test_approve_unlocks_reject_keeps_locked(db_session, orange_trip, driver, su
     )
     review_inspection(db_session, ins2, supervisor, approve=True)
     assert ins2.status is InspectionStatus.APPROVED
-    finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db_session, orange_trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     assert orange_trip.status is TripStatus.GREEN
 
 

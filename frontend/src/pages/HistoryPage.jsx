@@ -3,7 +3,7 @@
 // GET /users/{id}/history/monthly?year=&month= คืนตารางทริปรายเที่ยวของเดือนนั้น
 import { useState } from 'react'
 import { useDrivers, useMonthlyHistory } from '../api/hooks'
-import { money, inputCls, Btn, DIFFICULTY } from '../components/ui'
+import { money, inputCls, Btn, DIFFICULTY, ImageLightbox, PhotoThumb } from '../components/ui'
 
 const MONTHS = [
   'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
@@ -15,6 +15,7 @@ const YEARS = Array.from({ length: 5 }, (_, i) => now.getFullYear() - i)
 /* แถวเที่ยวหลัก 1 เที่ยว — กดเพื่อกางดูงานย่อย (Sub-Trips) เรียงตามลำดับ Origin → Destination */
 function TripRow({ t }) {
   const [open, setOpen] = useState(false)
+  const [zoom, setZoom] = useState(null)   // รูปหลักฐานที่กดขยายดูเต็มจอ
   const subs = t.sub_trips || []
   return (
     <>
@@ -50,6 +51,12 @@ function TripRow({ t }) {
                     <span className="font-medium text-slate-600">{d.origin}</span>
                     <span className="text-orange-500">➜</span>
                     <span className="font-semibold text-slate-800">{d.destination}</span>
+                    {/* หลักฐานรายขา — คลิกขยายดูย้อนหลัง (ของที่ขน / ผ้าใบ / ส่งของ) */}
+                    <span className="flex items-center gap-1 ml-2">
+                      <PhotoThumb src={d.loaded_photo} label={`ของที่ขน ขา ${d.seq}`} onZoom={setZoom} size="w-8 h-8" />
+                      <PhotoThumb src={d.tarp} label={`ผ้าใบ ขา ${d.seq}`} onZoom={setZoom} size="w-8 h-8" />
+                      <PhotoThumb src={d.photo} label={`ส่งของ ขา ${d.seq}`} onZoom={setZoom} size="w-8 h-8" />
+                    </span>
                     <span className="ml-auto text-xs text-slate-400">เบี้ยเลี้ยง {money(d.allowance)}</span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${d.delivered ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
                       {d.delivered ? 'ส่งแล้ว' : 'ยังไม่ส่ง'}
@@ -58,6 +65,13 @@ function TripRow({ t }) {
                 ))}
               </div>
             )}
+          </td>
+        </tr>
+      )}
+      {zoom && (
+        <tr>
+          <td colSpan={8} className="p-0">
+            <ImageLightbox image={zoom} onClose={() => setZoom(null)} />
           </td>
         </tr>
       )}

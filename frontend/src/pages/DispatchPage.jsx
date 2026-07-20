@@ -13,10 +13,15 @@ import TripDetailModal from '../components/TripDetailModal'
 import ApprovalCenter, { pendingReceipts } from '../components/ApprovalCenter'
 import MaintenanceReportsPanel from '../components/MaintenanceReportsPanel'
 
+// 3 กลุ่มสถานะ — โชว์ "คนขับทุกคน" ครบทุกกลุ่มเสมอ (เห็นภาพรวมทั้งกองรถในจอเดียว)
+// แต่แยกคอลัมน์ + แถบสีหัวกลุ่มชัดๆ เพื่อให้กวาดตาอ่านง่าย ไม่ปนกัน
 const GROUPS = [
-  { key: 'white',  st: 'WHITE'  },
-  { key: 'orange', st: 'ORANGE' },
-  { key: 'green',  st: 'GREEN'  },
+  { key: 'white',  st: 'WHITE',  hint: 'ว่าง พร้อมรับงาน (เรียงคิวให้แล้ว)',
+    head: 'bg-slate-100 ring-slate-300 text-slate-600', body: 'bg-slate-50/60 ring-slate-200' },
+  { key: 'orange', st: 'ORANGE', hint: 'จ่ายงานแล้ว กำลังไปขึ้นของ',
+    head: 'bg-orange-100 ring-orange-300 text-orange-700', body: 'bg-orange-50/50 ring-orange-200' },
+  { key: 'green',  st: 'GREEN',  hint: 'ขึ้นของแล้ว กำลังวิ่งไปส่ง',
+    head: 'bg-emerald-100 ring-emerald-300 text-emerald-700', body: 'bg-emerald-50/50 ring-emerald-200' },
 ]
 
 function DriverCard({ d, showRank, rank, onOpen }) {
@@ -130,27 +135,48 @@ export default function DispatchPage() {
       ) : error ? (
         <div className="text-sm text-red-500">โหลดข้อมูลไม่สำเร็จ — ตรวจสอบว่า Backend รันอยู่</div>
       ) : (
-        <div className="grid md:grid-cols-3 gap-4">
-          {GROUPS.map(({ key, st }) => {
-            const s = STATUS[st]
-            const list = data[key] || []
-            return (
-              <div key={key} className="space-y-2">
-                <div className={`flex items-center gap-2 text-xs font-bold ${s.text}`}>
-                  <span className={`w-2.5 h-2.5 rounded-full ${s.dot}`}></span>{s.th} ({list.length})
-                </div>
-                {!list.length && (
-                  <div className="text-xs text-slate-300 text-center py-4 border border-dashed border-slate-200 rounded-xl">
-                    {q ? '— ไม่พบผลลัพธ์ —' : '— ว่าง —'}
-                  </div>
-                )}
-                {list.map((d, i) => (
-                  <DriverCard key={d.id} d={d} showRank={key === 'white'} rank={i + 1} onOpen={setDetailId} />
-                ))}
-              </div>
-            )
-          })}
-        </div>
+        <>
+          {/* แถบสรุปหัวหน้า: คนขับทั้งกองรถกี่คน แยกตามสถานะกี่คน */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-bold text-slate-600">
+              👥 คนขับทั้งหมด {GROUPS.reduce((n, g) => n + (data[g.key] || []).length, 0)} คน
+            </span>
+            {GROUPS.map(({ key, st }) => (
+              <span key={key} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 font-semibold ring-1 ${STATUS[st].ring} ${STATUS[st].text} bg-white`}>
+                <span className={`w-2 h-2 rounded-full ${STATUS[st].dot}`}></span>
+                {STATUS[st].th} {(data[key] || []).length}
+              </span>
+            ))}
+          </div>
+
+          <div className="grid md:grid-cols-3 gap-4">
+            {GROUPS.map(({ key, st, hint, head, body }) => {
+              const s = STATUS[st]
+              const list = data[key] || []
+              return (
+                <section key={key} className={`rounded-2xl ring-1 ${body} p-2.5 space-y-2`}>
+                  {/* หัวกลุ่มแถบสี — แยกสายตาชัดว่าคนขับก้อนนี้อยู่สถานะไหน */}
+                  <header className={`rounded-xl ring-1 ${head} px-3 py-2`}>
+                    <div className="flex items-center gap-2 text-sm font-bold">
+                      <span className={`w-2.5 h-2.5 rounded-full ${s.dot}`}></span>
+                      {s.th}
+                      <span className="ml-auto rounded-full bg-white/70 px-2 py-0.5 text-xs">{list.length} คน</span>
+                    </div>
+                    <div className="text-[10px] font-medium opacity-70 mt-0.5">{hint}</div>
+                  </header>
+                  {!list.length && (
+                    <div className="text-xs text-slate-300 text-center py-4 border border-dashed border-slate-200 rounded-xl bg-white/50">
+                      {q ? '— ไม่พบผลลัพธ์ —' : '— ไม่มีคนขับในกลุ่มนี้ —'}
+                    </div>
+                  )}
+                  {list.map((d, i) => (
+                    <DriverCard key={d.id} d={d} showRank={key === 'white'} rank={i + 1} onOpen={setDetailId} />
+                  ))}
+                </section>
+              )
+            })}
+          </div>
+        </>
       )}
 
       {showAssign && <AssignModal onClose={() => setShowAssign(false)} onDone={notify} />}

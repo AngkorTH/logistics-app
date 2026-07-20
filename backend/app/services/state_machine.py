@@ -28,8 +28,11 @@ from app.models.enums import (
     TripStatus,
     compute_allowance,
 )
+from app.logging_config import get_logger
 from app.services.audit import who_label, write_audit
 from app.services.notification import push_notification
+
+logger = get_logger("state_machine")
 
 
 class TransitionError(Exception):
@@ -90,9 +93,9 @@ def _notify_status_change(trip: Trip, actor: User, old: TripStatus, new: TripSta
     """แจ้งเตือนคนขับว่าสถานะถูกเปลี่ยนแบบ Manual โดยใคร (stub — ต่อ push จริงภายหลัง)"""
     driver = trip.driver
     if driver and driver.notif:
-        print(
-            f"[PUSH->{driver.emp_id}] สถานะทริป {trip.code} ถูกเปลี่ยน "
-            f"{old.value} -> {new.value} โดย {who_label(actor)}"
+        logger.info(
+            "[PUSH->%s] สถานะทริป %s ถูกเปลี่ยน %s -> %s โดย %s",
+            driver.emp_id, trip.code, old.value, new.value, who_label(actor),
         )
 
 
@@ -139,7 +142,7 @@ def _notify_tarpaulin(driver: User, moment: str) -> None:
     ตอนนี้ยังเป็น stub (print) — จะต่อ push service จริงภายหลัง
     """
     if driver.notif:
-        print(f"[PUSH→{driver.emp_id}] อย่าลืมคลุมผ้าใบ! ({moment})")
+        logger.info("[PUSH->%s] อย่าลืมคลุมผ้าใบ! (%s)", driver.emp_id, moment)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +254,16 @@ def _validate_odometer_start(
     return round(float(odometer_start), 1), path
 
 
+def current_leg(trip: Trip) -> Drop | None:
+    """ขาปัจจุบันของทริป = งานย่อยที่ยังไม่ส่ง ซึ่ง seq มากสุด
+
+    ตรงกับที่ฝั่งคนขับเห็นบนจอ (1 ขาต่อครั้ง — ขาใหม่โผล่เมื่อคนคุมงานจ่ายงานย่อยเพิ่ม)
+    ไม่มีขาค้างเลย → None
+    """
+    pending = [d for d in trip.drops if not d.delivered]
+    return max(pending, key=lambda d: d.seq) if pending else None
+
+
 # ---------------------------------------------------------------------------
 # ORANGE → GREEN : Driver กด "ขนของขึ้นเสร็จ" + GPS ต้นทาง
 # ---------------------------------------------------------------------------
@@ -265,11 +278,14 @@ def finish_loading(
     # ส่งซ้ำตรงนี้ได้ (เช่นข้อมูลเก่า/แก้ไข) — ไม่ส่ง = ใช้ค่าที่บันทึกไว้ในทริป
     odometer_start: float | None = None,
     odometer_photo_b64: str | None = None,
+    loaded_photo_b64: str | None = None,   # รูปของที่ขนขึ้นรถแล้ว (บังคับ)
     force: bool = False,
     captured_at: datetime | None = None,  # เวลากดจริง (Offline Auto-Sync) — None = ตอนนี้
 ) -> Trip:
     """คนขับกด 'ขนของขึ้นเสร็จ' → GREEN พร้อม geo-stamp ต้นทาง (LOADED)
 
+    - **Hard-block รูปของที่ขน:** ต้องแนบ loaded_photo_b64 เสมอ เก็บลงขาปัจจุบัน
+      (Drop.loaded_photo) เป็น URL ไฟล์จริง
     - Soft-block ผ้าใบ: ไม่เช็ครูปผ้าใบเลย ปล่อยให้ไป GREEN ได้เสมอ
     - Idempotency: กดซ้ำ (already GREEN) จะไม่สร้าง GPS log ซ้ำ
     - การ์ดลำดับ: ปกติต้องมาจาก ORANGE ถ้าไม่ใช่ (เช่นยังไม่ถูกจ่ายงาน) → เตือนให้ยืนยัน
@@ -305,6 +321,23 @@ def finish_loading(
     else:
         odo, photo_path = _validate_odometer_start(db, trip, odometer_start, odometer_photo_b64)
 
+    # ---- ด่านรูปของที่ขนขึ้นรถ (Loaded Goods Photo) — hard-block ----
+    # เก็บลง "ขาปัจจุบัน" (งานย่อยที่ยังไม่ส่ง seq มากสุด) ให้ตรงกับที่คนขับเห็นบนจอ
+    from app.services.storage import StorageError, save_photo_b64
+
+    leg = current_leg(trip)
+    if leg is None:
+        raise TransitionError(
+            f"ทริป {trip.code} ไม่มีงานย่อยที่ยังไม่ส่ง — ขนของขึ้นรถไม่ได้ "
+            "(รอคนคุมงานจ่ายงานย่อยใหม่ก่อน)"
+        )
+    try:
+        loaded_path = save_photo_b64(loaded_photo_b64, "loaded")
+    except StorageError as e:
+        raise TransitionError(f"รูปของที่ขนขึ้นรถใช้ไม่ได้: {e}")
+    if not loaded_path:
+        raise TransitionError("ต้องถ่ายรูปของที่ขนขึ้นรถแนบมาด้วยก่อนกดขนของเสร็จ")
+
     if trip.status is not TripStatus.ORANGE and not force:
         raise TransitionWarning(
             f"ทริป {trip.code} ยังไม่อยู่สถานะ 'ขึ้นของ' (ปัจจุบัน {trip.status.value}) "
@@ -312,6 +345,7 @@ def finish_loading(
         )
 
     skipped = trip.status is not TripStatus.ORANGE
+    leg.loaded_photo = loaded_path
     trip.odometer_start = odo
     trip.odometer_start_photo = photo_path
     trip.status = TripStatus.GREEN
@@ -329,7 +363,9 @@ def finish_loading(
 
     write_audit(
         db, who_label(driver), "ขนของขึ้นเสร็จ", trip.code,
-        f"→ GREEN · GPS ต้นทาง {lat:.5f},{lng:.5f} · เลขไมล์เริ่ม {trip.odometer_start:.1f} (แนบรูปหน้าปัด)"
+        f"→ GREEN · ขา {leg.seq} ({leg.origin} → {leg.destination}) · "
+        f"GPS ต้นทาง {lat:.5f},{lng:.5f} · เลขไมล์เริ่ม {trip.odometer_start:.1f} "
+        f"(แนบรูปหน้าปัด + รูปของที่ขน {loaded_path})"
         + (" · ข้ามลำดับ (override)" if skipped else ""),
     )
     _notify_tarpaulin(driver, "สถานะเป็นสีเขียว")
@@ -368,12 +404,19 @@ def record_delivery(
 
     _assert_not_paused(trip)  # มีเหตุ SOS ค้าง → ล็อกทุกการเดินหน้า
 
-    # Phase 4: เก็บรูปจริงถ้าส่งมา — ไม่ส่ง = "attached" (นับว่ามีหลักฐานเหมือน flow เดิม)
+    # หลักฐานต้องเป็นไฟล์รูปจริงเสมอ — เก็บ URL (/uploads/dlv-xxxx.jpg) ลง DB
+    # ไม่มี marker "attached" อีกแล้ว: ไม่มีรูป = ไม่มีหลักฐาน = ปิดงานย่อยไม่ได้
     from app.services.storage import save_photo_b64
+
+    photo_path = save_photo_b64(photo_b64, "dlv")
+    if not photo_path:
+        raise TransitionError(
+            f"ต้องแนบรูป 'ส่งของสำเร็จ' ของจุด {drop.seq} มาด้วยเสมอ — ไม่มีรูป ปิดงานย่อยไม่ได้"
+        )
 
     coord = f"{lat:.5f},{lng:.5f}"
     drop.delivered = True
-    drop.photo = save_photo_b64(photo_b64, "dlv") or "attached"
+    drop.photo = photo_path
     drop.gps = coord
     drop.delivered_at = captured_at or _now()
     # จบงานย่อย → คนขับว่างทันที (รองาน/สีขาว) · เที่ยวหลักไม่ถูกปิด
@@ -519,12 +562,14 @@ def compute_km_per_liter(trip: Trip) -> float | None:
 
 
 def end_trip(
-    db: Session, trip: Trip, actor: User, odometer_end: float, *, force: bool = False
+    db: Session, trip: Trip, actor: User, odometer_end: float, *,
+    odometer_photo_b64: str | None = None, force: bool = False
 ) -> Trip:
-    """บันทึกเลขไมล์ปลายเที่ยว → คิดระยะทาง + km/L แล้วเก็บลงทริป (ไม่ปิดเที่ยว)
+    """บันทึกเลขไมล์ปลายเที่ยว + รูปหน้าปัด → คิดระยะทาง + km/L แล้วเก็บลงทริป (ไม่ปิดเที่ยว)
 
     การ์ด:
     - freeze แล้ว → ห้ามแก้เลขไมล์ (ต้องขอปลดล็อกก่อน)
+    - **ไม่แนบรูปหน้าปัดไมล์ → hard-block** (หลักฐานคู่กับเลขที่พิมพ์ ห้ามขาด)
     - เลขไมล์จบ < เลขไมล์เริ่ม → hard-block (ข้อมูลผิดแน่นอน)
     - ยังส่งของไม่ครบทุกจุด → เตือนให้ยืนยัน (warn-don't-block)
     """
@@ -532,6 +577,8 @@ def end_trip(
         raise TransitionError(f"ทริป {trip.code} ถูกล็อกการเงินแล้ว — แก้เลขไมล์ไม่ได้ ต้องขอปลดล็อกก่อน")
     if odometer_end is None or odometer_end < 0:
         raise TransitionError("เลขไมล์จบต้องเป็นตัวเลขไม่ติดลบ")
+    if not odometer_photo_b64 or not odometer_photo_b64.strip():
+        raise TransitionError("ต้องถ่ายรูปหน้าปัดไมล์ตอนจบงานแนบมาด้วยเสมอ")
     if trip.odometer_start is not None and odometer_end < trip.odometer_start:
         raise TransitionError(
             f"เลขไมล์จบ ({odometer_end:.1f}) น้อยกว่าเลขไมล์เริ่ม ({trip.odometer_start:.1f})"
@@ -543,6 +590,10 @@ def end_trip(
             f"ยังส่งของไม่ครบ (เหลือจุด {undelivered}) — ยืนยันจบงานหรือไม่?"
         )
 
+    # เก็บ URL ไฟล์รูปจริงลง DB (/uploads/odo-end-xxxx.jpg) — ไม่ใช่ธง boolean
+    from app.services.storage import save_photo_b64
+
+    trip.odometer_end_photo = save_photo_b64(odometer_photo_b64, "odo-end")
     trip.odometer_end = round(float(odometer_end), 1)
     if trip.odometer_start is not None:
         trip.distance_km = round(trip.odometer_end - trip.odometer_start, 2)
@@ -557,7 +608,7 @@ def end_trip(
 
     write_audit(
         db, who_label(actor), "จบงาน (เลขไมล์จบ)", trip.code,
-        f"ไมล์จบ {trip.odometer_end:.1f} · ระยะทาง {trip.distance_km:.2f} กม. · "
+        f"ไมล์จบ {trip.odometer_end:.1f} (แนบรูปหน้าปัด) · ระยะทาง {trip.distance_km:.2f} กม. · "
         f"น้ำมันรวม {total_liters(trip):.2f} ลิตร · "
         + (f"{trip.km_per_liter} กม./ลิตร" if trip.km_per_liter is not None else "คิด กม./ลิตร ไม่ได้ (ไม่มีข้อมูลลิตร)"),
     )

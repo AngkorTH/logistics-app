@@ -1,14 +1,14 @@
 """Router: User Management + Driver Rating + Monthly Trip History
 
-⚠️ Driver เข้าถึงไม่ได้:
-- ดู/แก้พนักงาน + ให้ดาว = Admin+  (require_admin)
-- ประวัติทริปรายเดือน       = Supervisor+ (require_supervisor)
+สิทธิ์:
+- ดู/แก้พนักงาน + ให้ดาว = Admin+ (require_admin) — Driver เข้าไม่ได้
+- ประวัติทริป/เงินรายเดือน = Supervisor+ ดูได้ทุกคน · **Driver ดูของตัวเองได้**
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.deps import require_admin, require_supervisor
+from app.deps import get_current_user, require_admin
 from app.models import User
 from app.models.enums import Role
 from app.schemas.management import (
@@ -80,14 +80,23 @@ def driver_monthly_history(
     year: int | None = Query(None, ge=2000, le=2100),
     month: int | None = Query(None, ge=1, le=12),
     db: Session = Depends(get_db),
-    _: User = Depends(require_supervisor),
+    viewer: User = Depends(get_current_user),
 ):
-    """ประวัติทริปรายเดือนของคนขับ (Supervisor+)
+    """ประวัติทริป + เงินรายเดือน
+
+    สิทธิ์:
+    - Supervisor+ ดูของคนขับคนไหนก็ได้
+    - **Driver ดูของตัวเองได้** (user_id ต้องเป็น id ตัวเอง) — ของคนอื่น = 403
 
     - ไม่ส่ง param    → สรุปรายเดือน (months) สำหรับ Month/Year Picker
     - ส่ง year+month → เพิ่มตารางทริปรายเที่ยว (trips) ของเดือนนั้น
       (flow: เลือกคนขับ → เลือกเดือน/ปี → แสดงตาราง)
     """
+    if viewer.role is Role.DRIVER and viewer.id != user_id:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "ดูประวัติได้เฉพาะของตนเองเท่านั้น",
+        )
     target = _get_user(user_id, db)
     if target.role is not Role.DRIVER:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "ดูประวัติทริปได้เฉพาะพนักงานขับรถ")

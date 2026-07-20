@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     Float,
@@ -62,6 +63,8 @@ class Trip(Base):
     odometer_end: Mapped[float | None] = mapped_column(Float, nullable=True)
     # รูปหน้าปัดไมล์ตอนเริ่มงาน — บังคับถ่ายคู่กับเลขไมล์ (ไว้ให้แอดมินเทียบกับเลขที่พิมพ์)
     odometer_start_photo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # รูปหน้าปัดไมล์ตอนจบงาน (End Trip) — บังคับถ่ายคู่กับเลขไมล์จบเสมอ
+    odometer_end_photo: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # km/L = (ไมล์จบ − ไมล์เริ่ม) / ลิตรรวมที่เติมในทริป · ลิตรรวม 0 → None (กันหารศูนย์)
     km_per_liter: Mapped[float | None] = mapped_column(Float, nullable=True)
 
@@ -97,16 +100,23 @@ class Trip(Base):
 
 class Drop(Base):
     __tablename__ = "drops"
-    __table_args__ = (UniqueConstraint("trip_id", "seq", name="uq_drop_trip_seq"),)
+    __table_args__ = (
+        UniqueConstraint("trip_id", "seq", name="uq_drop_trip_seq"),
+        # DB Security: ต้นทาง/ปลายทางห้ามว่างระดับฐานข้อมูล (NOT NULL + ความยาว > 0)
+        CheckConstraint("length(trim(origin)) > 0", name="ck_drop_origin_not_blank"),
+        CheckConstraint("length(trim(destination)) > 0", name="ck_drop_destination_not_blank"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     trip_id: Mapped[int] = mapped_column(ForeignKey("trips.id"), nullable=False, index=True)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)  # ลำดับจุด 1-5
 
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # Dynamic Multi-Drop: ทุกงานย่อยต้องระบุต้นทาง→ปลายทางเสมอ (บังคับที่ schema + DB)
-    origin: Mapped[str] = mapped_column(String(255), nullable=False, default="")
-    destination: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # Dynamic Multi-Drop: ทุกงานย่อยต้องระบุต้นทาง→ปลายทางเสมอ
+    # บังคับ 3 ชั้น: Pydantic (min_length=1) → NOT NULL → CheckConstraint ความยาว > 0
+    # ไม่มี default แล้ว — สร้าง Drop โดยไม่ใส่ต้นทาง/ปลายทาง = IntegrityError ทันที
+    origin: Mapped[str] = mapped_column(String(255), nullable=False)
+    destination: Mapped[str] = mapped_column(String(255), nullable=False)
     # รายได้ของขานี้ (คนคุมงานกรอกตอนจ่ายงาน) — ฐานคิดเบี้ยเลี้ยง
     revenue: Mapped[float] = mapped_column(Float, nullable=False, default=0)
     # ความยากรายขา — ตัวคูณเปอร์เซ็นต์เบี้ยเลี้ยง (ง่าย 5% · ปานกลาง 7% · ยาก 10%)
@@ -115,6 +125,10 @@ class Drop(Base):
     )
     # เบี้ยเลี้ยงขานี้ = revenue × เปอร์เซ็นต์ความยาก (ระบบคิดให้ ไม่ให้กรอกมือ)
     allowance: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+
+    # รูป "ของที่ขนขึ้นรถแล้ว" — คนขับถ่ายตอนกดยืนยันขนของเสร็จ (ORANGE → GREEN)
+    # nullable เพราะขาเก่าก่อนมีด่านนี้ไม่มีรูป
+    loaded_photo: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     delivered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     # Phase 4: เก็บ URL รูปจริง (/uploads/..) — None = ยังไม่มีรูป · "attached" = ข้อมูลเก่าก่อนมีระบบไฟล์

@@ -9,7 +9,7 @@ from app.models import Drop, Trip, User
 from app.models.enums import TripStatus
 from app.services.inspection import InspectionError, submit_inspection
 from app.services.state_machine import TransitionError, finish_loading
-from tests.conftest import ODO_PHOTO
+from tests.conftest import PHOTO, ODO_PHOTO
 
 OK_ITEMS = {"tires": True, "lights": True}
 
@@ -24,7 +24,7 @@ def _orange_trip(db, driver, code="T-100"):
     db.add(trip)
     db.commit()
     db.refresh(trip)
-    db.add(Drop(trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
+    db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
     db.commit()
     db.refresh(trip)
     return trip
@@ -53,7 +53,7 @@ def test_inspection_saves_odometer_and_photo(db_session, driver):
     assert trip.odometer_start_photo.startswith("/uploads/odo-")
 
     # ปุ่มขึ้นของเสร็จไม่ต้องส่งเลขไมล์ซ้ำ — ใช้ค่าที่บันทึกไว้
-    finish_loading(db_session, trip, driver, 13.75, 100.5)
+    finish_loading(db_session, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
     assert trip.status is TripStatus.GREEN
     assert trip.odometer_start == 1234.5
 
@@ -79,7 +79,7 @@ def test_start_blocked_when_trip_has_no_odometer(db_session, driver):
     """ทริปที่ไม่เคยผ่านด่านเลขไมล์ (ข้อมูลเก่า) → กดขึ้นของเสร็จไม่ได้"""
     trip = _orange_trip(db_session, driver)
     with pytest.raises(TransitionError):
-        finish_loading(db_session, trip, driver, 13.75, 100.5)
+        finish_loading(db_session, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
 
 
 def test_api_inspection_requires_odometer_fields(client, db_session, driver):

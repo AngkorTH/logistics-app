@@ -5,6 +5,8 @@
 """
 import pytest
 
+from tests.conftest import PHOTO
+
 from app.models import Drop, Trip, User
 from app.models.enums import ReceiptKind, Role, TripStatus
 from app.services.evidence import approve_receipt, upload_receipt
@@ -22,7 +24,7 @@ def _mk_trip(db, driver, allowances=(300, 300, 400), status=TripStatus.GREEN):
     db.commit()
     db.refresh(trip)
     for i, a in enumerate(allowances, start=1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=a))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=a))
     db.commit()
     db.refresh(trip)
     return trip
@@ -53,14 +55,15 @@ def test_allowance_total_sums_all_drops(db_session, driver):
 def test_fuel_toll_counts_only_approved(db_session, driver, supervisor):
     """ยอดน้ำมัน/ทางหลวงคิดเฉพาะบิลที่ approved — draft ไม่นับ"""
     trip = _mk_trip(db_session, driver)
-    r1 = upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.FUEL, ocr_amount=1000)
-    upload_receipt(db_session, trip.drops[1], supervisor, ReceiptKind.FUEL, ocr_amount=500)  # draft
-    upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.TOLL, ocr_amount=90)   # draft
+    r1 = upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.FUEL, photo_b64=PHOTO)
+    upload_receipt(db_session, trip.drops[1], supervisor, ReceiptKind.FUEL, photo_b64=PHOTO)  # draft
+    upload_receipt(db_session, trip.drops[0], supervisor, ReceiptKind.TOLL, photo_b64=PHOTO)  # draft
 
     fin = compute_finance(trip)
     assert fin.fuel_total == 0 and fin.toll_total == 0  # ยังไม่ approve เลย
 
-    approve_receipt(db_session, r1, supervisor)
+    # Supervisor เปิดรูปดูแล้วคีย์ยอด 1000 + วันที่เอง (ไม่มี OCR)
+    approve_receipt(db_session, r1, supervisor, amount=1000, date="2026-07-10")
     fin = compute_finance(trip)
     assert fin.fuel_total == 1000  # นับเฉพาะใบที่ approve
     assert fin.toll_total == 0

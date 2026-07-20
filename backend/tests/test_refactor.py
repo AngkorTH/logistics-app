@@ -41,7 +41,7 @@ def staff(db_session):
 
 def _drops(db, trip, allowances):
     for i, a in enumerate(allowances, start=1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=a))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=a))
     db.commit()
 
 

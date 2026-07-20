@@ -8,6 +8,8 @@
 from datetime import datetime, timezone
 
 import pytest
+
+from tests.conftest import ODO_PHOTO
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -45,7 +47,7 @@ def _trip(db, code, status=TripStatus.ORANGE, allowances=(300, 200)):
     db.commit()
     db.refresh(trip)
     for i, a in enumerate(allowances, start=1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=a))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด{i}", allowance=a))
     db.commit()
     db.refresh(trip)
     return trip
@@ -95,7 +97,7 @@ def _make_receipt(client, db, headers):
     trip = _trip(db, "T-RC1", status=TripStatus.GREEN)
     drop = trip.drops[0]
     r = client.post(f"/drops/{drop.id}/receipt",
-                    json={"kind": "FUEL", "ocr_amount": 500}, headers=headers)
+                    json={"kind": "FUEL", "photo_b64": ODO_PHOTO}, headers=headers)
     assert r.status_code == 200, r.text
     return r.json()["id"]
 

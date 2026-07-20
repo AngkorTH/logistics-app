@@ -15,7 +15,10 @@ from sqlalchemy.orm import Session, object_session
 
 from app.models import Receipt, Trip
 from app.models.enums import ReceiptKind
+from app.logging_config import get_logger
 from app.services.audit import who_label, write_audit
+
+logger = get_logger("finance")
 
 
 class FinanceError(Exception):
@@ -129,7 +132,7 @@ def apply_penalty(db: Session, trip: Trip, actor, amount: float, reason: str) ->
         db, who_label(actor), "หักเงิน", trip.code,
         f"หัก {trip.penalty:.2f} จากเบี้ยเลี้ยงรวม · เหตุผล: {trip.penalty_reason}",
     )
-    _notify_admin(trip, actor)
+    _notify_admin(db, trip, actor)
     return trip
 
 
@@ -146,9 +149,19 @@ def set_bonus(db: Session, trip: Trip, actor, amount: float) -> Trip:
     return trip
 
 
-def _notify_admin(trip: Trip, actor) -> None:
-    """แจ้งเตือน Admin เมื่อมีการหักเงิน (stub — จะต่อ push/inbox จริงภายหลัง)"""
-    print(f"[NOTIFY→ADMIN] {who_label(actor)} หักเงินทริป {trip.code} {trip.penalty:.2f} บาท")
+def _notify_admin(db: Session, trip: Trip, actor) -> None:
+    """แจ้งเตือน Admin เมื่อมีการหักเงิน — **เขียนลงกล่องจดหมายจริง (DB)** ไม่ใช่แค่ log
+
+    import ในฟังก์ชันเพื่อเลี่ยง circular import (notification ไม่พึ่ง finance)
+    """
+    from app.services.notification import push_notification
+
+    push_notification(
+        db, "PENALTY_APPLIED", f"หักเงินคนขับ · {trip.code}",
+        f"{who_label(actor)} หักเงิน {trip.penalty:.2f} บาท · เหตุผล: {trip.penalty_reason}",
+        trip.id,
+    )
+    logger.info("[NOTIFY->ADMIN] %s หักเงินทริป %s %.2f บาท", who_label(actor), trip.code, trip.penalty)
 
 
 def trip_summary(trip: Trip) -> dict:

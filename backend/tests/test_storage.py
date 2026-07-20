@@ -8,7 +8,7 @@ from app.models.enums import ReceiptKind, Role
 from app.services.evidence import upload_receipt, upload_tarp
 from app.services.state_machine import assign_trip, finish_loading, record_delivery
 from app.services.storage import UPLOAD_DIR, StorageError, save_photo_b64
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 
 TINY_PNG = ("data:image/png;base64,"
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"
@@ -33,12 +33,12 @@ def _green_trip(db, driver, supervisor):
     trip = Trip(code="T-700", driver_id=driver.id)
     db.add(trip)
     db.commit()
-    db.add(Drop(trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
+    db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
     db.commit()
     db.refresh(trip)
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     return trip
 
 
@@ -74,12 +74,15 @@ def test_delivery_stores_real_photo(db_session, driver, supervisor):
     assert _file_of(drop.photo).exists()
 
 
-def test_delivery_without_photo_still_marks(db_session, driver, supervisor):
-    """ไม่ส่งรูป (flow เก่า/offline เพี้ยน) → ยังนับหลักฐานเป็น 'attached' เหมือนเดิม"""
+def test_delivery_without_photo_is_blocked(db_session, driver, supervisor):
+    """ไม่ส่งรูป → ปิดงานย่อยไม่ได้ (เลิกใช้ marker 'attached' แล้ว หลักฐานต้องเป็นไฟล์จริง)"""
+    from app.services.state_machine import TransitionError
+
     trip = _green_trip(db_session, driver, supervisor)
     drop = trip.drops[0]
-    record_delivery(db_session, drop, driver, 13.8, 100.6)
-    assert drop.photo == "attached"
+    with pytest.raises(TransitionError):
+        record_delivery(db_session, drop, driver, 13.8, 100.6)
+    assert drop.delivered is False and drop.photo is None
 
 
 def test_tarp_and_receipt_store_photos(db_session, driver, supervisor):
@@ -89,7 +92,7 @@ def test_tarp_and_receipt_store_photos(db_session, driver, supervisor):
     assert drop.tarp.startswith("/uploads/tarp-")
 
     r = upload_receipt(db_session, drop, driver, ReceiptKind.FUEL,
-                       ocr_amount=500, photo_b64=TINY_PNG)
+                       photo_b64=TINY_PNG)
     assert r.photo.startswith("/uploads/rcpt-")
     assert _file_of(r.photo).exists()
 

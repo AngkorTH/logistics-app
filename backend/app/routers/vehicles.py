@@ -8,12 +8,18 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.deps import require_admin
 from app.models import User, Vehicle
-from app.schemas.management import VehicleAssignRequest, VehicleCreate, VehicleUpdate
+from app.schemas.management import (
+    VehicleAssignRequest,
+    VehicleCreate,
+    VehicleStatusRequest,
+    VehicleUpdate,
+)
 from app.schemas.ops import VehicleOut
 from app.services.management import (
     ManageError,
     assign_vehicle,
     create_vehicle,
+    set_vehicle_status,
     update_vehicle,
 )
 
@@ -59,6 +65,24 @@ def edit_vehicle(
     """แก้ข้อมูลรถ (รุ่น/อัตราสิ้นเปลือง) (Admin+)"""
     vehicle = _get_vehicle(vehicle_id, db)
     return update_vehicle(db, vehicle, actor, body.model_dump(exclude_unset=True))
+
+
+@router.post("/{vehicle_id}/status", response_model=VehicleOut)
+def set_status(
+    vehicle_id: int,
+    body: VehicleStatusRequest,
+    db: Session = Depends(get_db),
+    actor: User = Depends(require_admin),
+):
+    """แจ้งรถเข้าซ่อม / ปลดล็อกกลับมาใช้งาน — **Admin ขึ้นไปเท่านั้น**
+
+    ⚠️ Supervisor กดไม่ได้ (require_admin) — คนคุมงานทำได้แค่ "ปิดเหตุ" ที่คนขับแจ้งมา
+    """
+    vehicle = _get_vehicle(vehicle_id, db)
+    try:
+        return set_vehicle_status(db, vehicle, actor, body.status, body.reason)
+    except ManageError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
 @router.post("/{vehicle_id}/assign", response_model=VehicleOut)

@@ -19,7 +19,7 @@ from app.services.state_machine import (
     finish_loading,
     record_delivery,
 )
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 
 
 @pytest.fixture()
@@ -48,7 +48,7 @@ def _trip_with_first_leg(db, driver, supervisor):
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
     finish_loading(db, trip, driver, 13.75, 100.5,
-                   odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+                   odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     return trip
 
 
@@ -56,24 +56,24 @@ def _next_leg(db, trip, driver, supervisor, origin, destination):
     """คนคุมงานจ่ายขาถัดไป → คนขับขึ้นของแล้ววิ่งต่อ"""
     add_drop(db, trip, supervisor, origin=origin, destination=destination, revenue=10000)
     assign_trip(db, trip, "1กก-1234", supervisor)
-    finish_loading(db, trip, driver, 13.75, 100.5)
+    finish_loading(db, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
 
 
 def test_driver_cannot_start_next_leg_alone(db_session, driver, supervisor):
     """จบขาแล้วคนขับกลับเป็น "รองาน" — วิ่งขาถัดไปเองไม่ได้จนกว่าคนคุมงานจะจ่ายงานใหม่"""
     trip = _trip_with_first_leg(db_session, driver, supervisor)
-    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6)
+    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6, photo_b64=PHOTO)
     assert trip.status is TripStatus.WHITE
 
     # คนคุมงานเพิ่มขาที่ 2 แต่ยังไม่จ่ายงาน → คนขับยังส่งไม่ได้
     add_drop(db_session, trip, supervisor, origin="กรุงเทพฯ", destination="ตาก", revenue=10000)
     with pytest.raises(TransitionError):
-        record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6)
+        record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6, photo_b64=PHOTO)
 
     # จ่ายงานแล้ว → วิ่งต่อได้
     assign_trip(db_session, trip, "1กก-1234", supervisor)
-    finish_loading(db_session, trip, driver, 13.75, 100.5)
-    record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6)
+    finish_loading(db_session, trip, driver, 13.75, 100.5, loaded_photo_b64=PHOTO)
+    record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6, photo_b64=PHOTO)
     assert trip.status is TripStatus.WHITE
     assert trip.completed_at is None      # เที่ยวหลักยังไม่จบ
 
@@ -82,24 +82,24 @@ def test_redelivery_is_idempotent_after_status_flips_white(db_session, driver, s
     """กดส่งซ้ำหลังทริปพลิกเป็น WHITE ต้องเงียบ (ไม่ error)"""
     trip = _trip_with_first_leg(db_session, driver, supervisor)
     d = trip.drops[0]
-    record_delivery(db_session, d, driver, 13.8, 100.6)
-    assert record_delivery(db_session, d, driver, 13.8, 100.6) is d
+    record_delivery(db_session, d, driver, 13.8, 100.6, photo_b64=PHOTO)
+    assert record_delivery(db_session, d, driver, 13.8, 100.6, photo_b64=PHOTO) is d
 
 
 def test_summary_rolls_up_whole_trip(db_session, driver, supervisor):
     """สรุปเที่ยว: จำนวนขา · น้ำมันรวม · เลขไมล์ต้น→ปลาย · เส้นทางเรียงลำดับ"""
     trip = _trip_with_first_leg(db_session, driver, supervisor)
     log_fuel(db_session, trip, driver, liters=40, photo_b64=ODO_PHOTO)
-    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6)
+    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6, photo_b64=PHOTO)
 
     _next_leg(db_session, trip, driver, supervisor, "กรุงเทพฯ", "ตาก")
     log_fuel(db_session, trip, driver, liters=20, photo_b64=ODO_PHOTO)
-    record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6)
+    record_delivery(db_session, trip.drops[1], driver, 13.8, 100.6, photo_b64=PHOTO)
 
     _next_leg(db_session, trip, driver, supervisor, "ตาก", "สระบุรี")
-    record_delivery(db_session, trip.drops[2], driver, 13.8, 100.6)
+    record_delivery(db_session, trip.drops[2], driver, 13.8, 100.6, photo_b64=PHOTO)
 
-    end_trip(db_session, trip, driver, 1600)      # เลขไมล์ปลายเที่ยว
+    end_trip(db_session, trip, driver, 1600, odometer_photo_b64=PHOTO)      # เลขไมล์ปลายเที่ยว
     complete_trip(db_session, trip, supervisor)   # คนคุมงานกดจบเที่ยว
 
     s = trip_summary(trip)
@@ -118,8 +118,8 @@ def test_summary_rolls_up_whole_trip(db_session, driver, supervisor):
 def test_end_trip_does_not_complete_the_trip(db_session, driver, supervisor):
     """คนขับบันทึกเลขไมล์ปลายเที่ยว ไม่ถือว่า "จบเที่ยว" — ยังต้องให้คนคุมงานกด"""
     trip = _trip_with_first_leg(db_session, driver, supervisor)
-    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6)
-    end_trip(db_session, trip, driver, 1200)
+    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6, photo_b64=PHOTO)
+    end_trip(db_session, trip, driver, 1200, odometer_photo_b64=PHOTO)
 
     assert trip.odometer_end == 1200
     assert trip.completed_at is None

@@ -11,7 +11,7 @@ from app.models import MaintenanceReport, Notification, Role, Trip, User, Vehicl
 from app.models.enums import IncidentStatus, TripStatus, VehicleStatus
 from app.services.maintenance import MaintenanceError, report_issue, resolve_report
 from app.services.state_machine import assign_trip, finish_loading
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 
 # รูป 1x1 png ถูกต้อง (base64) — save_photo_b64 ต้อง decode ได้
 PNG_1PX = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
@@ -64,11 +64,11 @@ def test_report_blocked_while_running(db_session, driver, supervisor, vehicle):
     db_session.add(trip)
     db_session.commit()
     from app.models import Drop
-    db_session.add(Drop(trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
+    db_session.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
     db_session.commit()
     assign_trip(db_session, trip, vehicle.plate, supervisor)
     pass_inspection(db_session, trip, driver)
-    finish_loading(db_session, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db_session, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     assert trip.status is TripStatus.GREEN
     with pytest.raises(MaintenanceError):
         report_issue(db_session, driver, message="x", photo_b64=PNG_1PX)
@@ -109,7 +109,7 @@ def test_assign_blocked_when_vehicle_in_maintenance(client, db_session, driver, 
     db_session.add(trip)
     db_session.commit()
     from app.models import Drop
-    db_session.add(Drop(trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
+    db_session.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=1, name="จุด 1", allowance=300))
     db_session.commit()
 
     # คุมงานล็อกอินแล้วจ่ายงาน — ต้องโดน 400 (รถกำลังซ่อม)

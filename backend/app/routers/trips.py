@@ -30,6 +30,7 @@ from app.schemas.ops import (
     TripCreate,
     TripDetailOut,
     TripOut,
+    TripReceiptRequest,
     TripSummaryOut,
     UnfreezeRequest,
     VehicleOut,
@@ -37,7 +38,7 @@ from app.schemas.ops import (
 from app.services.audit import who_label, write_audit
 from app.services.finance import FinanceError, compute_finance, trip_summary
 from app.services.trip_edit import adjust_trip
-from app.services.evidence import EvidenceError, log_fuel
+from app.services.evidence import EvidenceError, log_fuel, log_trip_receipt
 from app.services.storage import StorageError
 from app.services.state_machine import (
     TransitionError,
@@ -301,12 +302,18 @@ def finish_loading_ep(
     user: User = Depends(get_current_user),
 ):
     """คนขับกด 'ขนของขึ้นเสร็จ' (เจ้าของทริป) → GREEN + GPS ต้นทาง
-    บังคับส่งเลขไมล์เริ่ม + รูปหน้าปัดไมล์ (ขาด/เลขน้อยกว่าเที่ยวก่อน = 400 บล็อก)"""
+
+    บังคับ:
+    - เลขไมล์เริ่ม + รูปหน้าปัดไมล์ (ขาด/เลขน้อยกว่าเที่ยวก่อน = 400 บล็อก)
+    - **รูปของที่ขนขึ้นรถ** (loaded_photo_b64) — ขาด = 422 ตั้งแต่ schema
+      เก็บลงขาปัจจุบัน (Drop.loaded_photo) เป็น URL ไฟล์จริง
+    """
     _assert_own_driver(trip, user)
     try:
         finish_loading(
             db, trip, trip.driver, body.lat, body.lng,
             odometer_start=body.odometer_start, odometer_photo_b64=body.odometer_photo_b64,
+            loaded_photo_b64=body.loaded_photo_b64,
             force=body.force, captured_at=body.captured_at,
         )
     except TransitionWarning as w:
@@ -330,8 +337,35 @@ def log_fuel_ep(
         return log_fuel(
             db, trip, user,
             liters=body.liters, photo_b64=body.photo_b64,
-            ocr_amount=body.ocr_amount, ocr_date=body.ocr_date,
             captured_at=body.captured_at,
+        )
+    except (EvidenceError, StorageError) as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+
+@router.post("/{trip_id}/receipt", response_model=ReceiptOut)
+def log_trip_receipt_ep(
+    body: TripReceiptRequest,
+    trip: Trip = Depends(get_trip),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """อัปบิลระหว่างทาง (Mid-Trip) — น้ำมัน/ทางหลวง อัปกี่ใบก็ได้
+
+    เปิดใช้ได้ตลอดที่คนขับยังวิ่งงาน (🟠 ไปขึ้นของ · 🟢 กำลังไปส่ง) ไม่ผูกกับ
+    flow ส่งของเสร็จอีกแล้ว — แวะปั๊มก็ถ่ายส่งได้เลย
+    ทริปที่ล็อกการเงินแล้ว/ยังไม่ถูกจ่ายงาน → 400
+    """
+    _assert_own_driver(trip, user)
+    if trip.status not in (TripStatus.ORANGE, TripStatus.GREEN):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"อัปบิลระหว่างทางได้เฉพาะตอนกำลังวิ่งงาน (🟠/🟢) — ทริปนี้อยู่สถานะ {trip.status.value}",
+        )
+    try:
+        return log_trip_receipt(
+            db, trip, user, body.kind,
+            photo_b64=body.photo_b64, liters=body.liters, captured_at=body.captured_at,
         )
     except (EvidenceError, StorageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -344,14 +378,18 @@ def end_trip_ep(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """จบงาน (End Trip): ส่งเลขไมล์จบ → คิดระยะทาง + km/L อัตโนมัติแล้วเก็บลงทริป
+    """จบงาน (End Trip): ส่งเลขไมล์จบ + **รูปหน้าปัดไมล์ (บังคับ)**
+    → คิดระยะทาง + km/L อัตโนมัติแล้วเก็บลงทริป พร้อม URL รูปหน้าปัด
     ยังส่งของไม่ครบ → 409 ให้ยืนยันแล้วส่ง force=True (warn-don't-block)"""
     _assert_own_driver(trip, user)
     try:
-        end_trip(db, trip, user, body.odometer_end, force=body.force)
+        end_trip(
+            db, trip, user, body.odometer_end,
+            odometer_photo_b64=body.odometer_photo_b64, force=body.force,
+        )
     except TransitionWarning as w:
         raise HTTPException(status.HTTP_409_CONFLICT, str(w))
-    except TransitionError as e:
+    except (TransitionError, StorageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return _detail(trip)
 

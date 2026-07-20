@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import Role, TripDifficulty
+from app.models.enums import Role, TripDifficulty, VehicleStatus
 
 
 # --------------------------- Smart Dispatch Queue ---------------------------
@@ -137,6 +137,10 @@ class SubTripRow(BaseModel):
     allowance: float
     delivered: bool
     delivered_at: str | None = None
+    # URL รูปหลักฐานของขานี้ — เปิดดูย้อนหลังได้จากหน้าประวัติ
+    loaded_photo: str | None = None   # ของที่ขนขึ้นรถ (ถ่ายตอนกดขนของเสร็จ)
+    photo: str | None = None          # ส่งของสำเร็จ
+    tarp: str | None = None           # ผ้าใบ
 
 
 class TripHistoryRow(BaseModel):
@@ -176,3 +180,12 @@ class VehicleUpdate(BaseModel):
 class VehicleAssignRequest(BaseModel):
     """ผูก/ถอดคนขับประจำรถ — ส่ง null เพื่อถอด"""
     driver_id: int | None = None
+
+
+class VehicleStatusRequest(BaseModel):
+    """แอดมินสั่งเข้า/ออกจากการซ่อมด้วยมือ (Admin เท่านั้น — Supervisor ทำไม่ได้)
+
+    reason บังคับเสมอ เพื่อบันทึกลง Audit ว่าใครสั่งซ่อมเพราะอะไร
+    """
+    status: VehicleStatus                    # MAINTENANCE = เข้าซ่อม · AVAILABLE = กลับมาพร้อมใช้
+    reason: str = Field(..., min_length=1)

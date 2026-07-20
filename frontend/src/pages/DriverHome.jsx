@@ -4,13 +4,13 @@
 // Phase 3A: Checklist ตรวจรถล็อกปุ่มเริ่มงาน · SOS · เบิกเงินล่วงหน้า (Bottom Sheet ทั้งคู่)
 import { useState } from 'react'
 import {
-  useTrips, useFinishLoading, useUploadReceipt, useUploadTarp, useRecordDelivery,
+  useTrips, useFinishLoading, useUploadTarp, useRecordDelivery,
   useInspection, useSubmitInspection, useAdvances, useRequestAdvance, useSos, useReportIssue,
-  useLogFuel, useEndTrip,
+  useLogTripReceipt, useEndTrip,
 } from '../api/hooks'
 import { errMsg } from '../api/client'
 import { DIFFICULTY, ImageLightbox, PhotoThumb, STATUS, StatusPill, money } from '../components/ui'
-import { AdvanceSheet, EndTripSheet, InspectionCard, PhotoConfirmSheet, RefuelSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
+import { AdvanceSheet, EndTripSheet, FinishLoadingSheet, InspectionCard, PhotoConfirmSheet, TripReceiptSheet, SosSheet, ReportIssueSheet } from '../components/DriverSheets'
 import { pickImage } from '../utils/image'
 import { useOffline } from '../offline/useOffline'
 
@@ -26,21 +26,19 @@ const getGps = () =>
     )
   })
 
-// จำลองผลอ่าน OCR ฝั่ง client (backend เก็บเป็น Draft รอ Supervisor ตรวจเสมอ)
-const mockOcr = (kind) =>
-  kind === 'FUEL' ? 1000 + Math.floor(Math.random() * 1500) : 100 + Math.floor(Math.random() * 300)
+// ❌ ปิด OCR แล้ว — คนขับส่งได้แค่ "รูปบิล" เท่านั้น
+// ยอดเงินและวันที่บนบิล คนคุมงานเปิดรูปดูแล้วพิมพ์เองในหน้าตรวจบิล (ศูนย์อนุมัติ)
 
 export default function DriverHome() {
   const { data: trips, isLoading, error } = useTrips()
   const finishLoading = useFinishLoading()
-  const uploadReceipt = useUploadReceipt()
   const uploadTarp = useUploadTarp()
   const delivery = useRecordDelivery()
   const submitInspection = useSubmitInspection()
   const requestAdvance = useRequestAdvance()
   const sos = useSos()
   const reportIssue = useReportIssue()
-  const logFuel = useLogFuel()
+  const logTripReceipt = useLogTripReceipt()
   const endTrip = useEndTrip()
   const { data: advances } = useAdvances()
 
@@ -59,6 +57,12 @@ export default function DriverHome() {
 
   // ทริปที่กำลังวิ่งอยู่ (ORANGE/GREEN) — ถ้าไม่มีคือสถานะรองาน
   const active = (trips || []).find((t) => !t.frozen && t.status !== 'WHITE')
+  // 1 ขาต่อครั้ง: คนขับเห็นเฉพาะ "งานล่าสุด" ที่คนคุมงานเพิ่งจ่ายมา (ขาที่ยังไม่ส่ง seq มากสุด)
+  // ขาถัดไปจะโผล่ก็ต่อเมื่อคนคุมงานจ่ายงานย่อยใบใหม่เท่านั้น
+  // (ประกาศไว้ตรงนี้เพราะ sheets ด้านล่างต้องใช้ก่อนถึงบล็อกเรนเดอร์สถานะ)
+  const currentLeg = active
+    ? [...active.drops].filter((d) => !d.delivered).sort((a, b) => a.seq - b.seq).pop()
+    : null
   // ผลตรวจสภาพรถล่าสุดของทริปนี้ (โหลดเฉพาะตอนมีทริป)
   const { data: inspection } = useInspection(active?.id)
   const inspectionOk = !!inspection && ['PASSED', 'APPROVED'].includes(inspection.status)
@@ -122,27 +126,40 @@ export default function DriverHome() {
               setSheet(null)
             }, '🔧 แจ้งเหตุแล้ว! รถถูกตั้งเป็น "กำลังซ่อม" — คนคุมงานได้รับแจ้งเตือน')} />
       )}
-      {sheet === 'refuel' && active && (
-        <RefuelSheet busy={busyKey === 'refuel'} onClose={() => setSheet(null)}
-          onSubmit={({ liters, photo_b64 }) =>
-            run('refuel', async () => {
-              await logFuel.mutateAsync({
-                tripId: active.id, liters, photo_b64, ocr_amount: mockOcr('FUEL'),
-              })
+      {/* 🧾 อัปบิลระหว่างทาง — เปิดได้ทั้ง 🟠 และ 🟢 · อัปกี่ใบก็ได้ ไม่ผูกกับ flow ส่งของ */}
+      {sheet === 'receipt' && active && (
+        <TripReceiptSheet busy={busyKey === 'receipt'} onClose={() => setSheet(null)}
+          onSubmit={({ kind, photo_b64, liters }) =>
+            run('receipt', async () => {
+              await logTripReceipt.mutateAsync({ tripId: active.id, kind, photo_b64, liters })
               setSheet(null)
-            }, `⛽ บันทึกเติมน้ำมัน ${liters} ลิตรแล้ว — รอคนคุมงานยืนยันยอดเงิน`)} />
+            }, kind === 'FUEL'
+              ? `⛽ ส่งบิลน้ำมัน ${liters} ลิตรแล้ว — ส่งใบต่อไปได้เลย`
+              : '🛣️ ส่งบิลทางหลวงแล้ว — ส่งใบต่อไปได้เลย')} />
+      )}
+      {/* ✅ ยืนยันขนของขึ้นเสร็จ (🟠 → 🟢) — กันกดพลาด + บังคับรูปของบนรถ */}
+      {sheet === 'loaded' && active && (
+        <FinishLoadingSheet busy={busyKey === 'load'} leg={currentLeg} onClose={() => setSheet(null)}
+          onSubmit={({ loaded_photo_b64 }) =>
+            run('load', async () => {
+              const gps = await getGps()
+              await finishLoading.mutateAsync({ tripId: active.id, ...gps, loaded_photo_b64 })
+              setSheet(null)
+            }, '📍 บันทึกรูปของ + GPS ต้นทางแล้ว → สถานะ 🟢 กำลังไปส่ง')} />
       )}
       {endTarget && (
         <EndTripSheet busy={busyKey === 'end'} odometerStart={endTarget.odometer_start}
           onClose={() => setEndTarget(null)}
-          onSubmit={({ odometer_end }) =>
+          onSubmit={({ odometer_end, odometer_photo_b64 }) =>
             run('end', async () => {
               try {
-                await endTrip.mutateAsync({ tripId: endTarget.id, odometer_end })
+                await endTrip.mutateAsync({ tripId: endTarget.id, odometer_end, odometer_photo_b64 })
               } catch (e) {
                 // 409 = ยังส่งของไม่ครบ (warn-don't-block) → ยืนยันแล้วส่งซ้ำด้วย force
                 if (e.response?.status === 409 && window.confirm(errMsg(e))) {
-                  await endTrip.mutateAsync({ tripId: endTarget.id, odometer_end, force: true })
+                  await endTrip.mutateAsync({
+                    tripId: endTarget.id, odometer_end, odometer_photo_b64, force: true,
+                  })
                 } else throw e
               }
               setEndTarget(null)
@@ -167,11 +184,13 @@ export default function DriverHome() {
   // ปุ่มเบิกเงิน (ทุกสถานะ) + SOS (เฉพาะตอนมีทริปวิ่ง) + แจ้งเหตุรถมีปัญหา (เฉพาะตอนรองาน/ขาว)
   const actionRow = (
     <div className="grid gap-2 grid-cols-2">
-      {/* ⛽ บันทึกเติมน้ำมัน — เฉพาะช่วงกำลังวิ่งงาน (🟠/🟢) · ล็อกเมื่อทริปถูกพักจาก SOS */}
+      {/* 🧾 อัปบิลระหว่างทาง — เปิดได้ตลอดที่ยังวิ่งงาน ทั้ง 🟠 และ 🟢 · อัปกี่ใบก็ได้
+          ไม่ผูกกับ flow "ส่งของสำเร็จ" แล้ว (แวะปั๊มก็ถ่ายส่งได้ทันที)
+          ล็อกเฉพาะตอนทริปถูกพักจาก SOS */}
       {active && (
-        <button onClick={() => setSheet('refuel')} disabled={active.paused}
-          className="col-span-2 py-3.5 rounded-xl bg-white ring-1 ring-slate-300 text-slate-700 text-base font-bold active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
-          ⛽ บันทึกเติมน้ำมัน
+        <button onClick={() => setSheet('receipt')} disabled={active.paused}
+          className="col-span-2 py-3.5 rounded-xl bg-white ring-1 ring-blue-300 text-blue-700 text-base font-bold active:scale-[0.98] transition disabled:opacity-40 disabled:cursor-not-allowed">
+          🧾 อัปบิลระหว่างทาง (น้ำมัน / ทางหลวง)
         </button>
       )}
       <button onClick={() => setSheet('advance')}
@@ -211,9 +230,6 @@ export default function DriverHome() {
 
   const s = STATUS[active.status]
   const allowanceTotal = active.drops.reduce((sm, d) => sm + d.allowance, 0)
-  // 1 ขาต่อครั้ง: คนขับเห็นเฉพาะ "งานล่าสุด" ที่คนคุมงานเพิ่งจ่ายมา (ขาที่ยังไม่ส่ง seq มากสุด)
-  // ขาถัดไปจะโผล่ก็ต่อเมื่อคนคุมงานจ่ายงานย่อยใบใหม่เท่านั้น
-  const currentLeg = [...active.drops].filter((d) => !d.delivered).sort((a, b) => a.seq - b.seq).pop()
   const legNo = currentLeg ? currentLeg.seq : active.drops.length
 
   // 🚨 ป้ายเตือนทริปถูกพัก (SOS ค้าง) — ล็อกทุกปุ่มเดินหน้า
@@ -293,12 +309,8 @@ export default function DriverHome() {
         {/* ---- ปุ่มขึ้นของเสร็จ — ล็อกจนกว่าตรวจรถผ่าน (ข้อกำหนด 3A-2) ---- */}
         <button
           disabled={busyKey === 'load' || !inspectionOk || active.paused || isQueued(`/trips/${active.id}/finish-loading`)}
-          onClick={async () => {
-            // เลขไมล์เริ่ม + รูปหน้าปัดถูกบันทึกไปแล้วตอนส่งผลตรวจสภาพรถ — ที่นี่เหลือแค่ GPS ต้นทาง
-            const gps = await getGps()
-            run('load', () => finishLoading.mutateAsync({ tripId: active.id, ...gps }),
-              '📍 บันทึก GPS ต้นทางแล้ว → สถานะ 🟢 กำลังไปส่ง')
-          }}
+          // ไม่ยิง API ตรงๆ แล้ว — เปิดหน้ายืนยันก่อน (กันกดพลาด + บังคับถ่ายรูปของบนรถ)
+          onClick={() => setSheet('loaded')}
           className="w-full py-5 rounded-2xl bg-emerald-500 hover:bg-emerald-600 active:scale-[0.98] transition text-white text-xl font-bold shadow-lg disabled:opacity-40 disabled:cursor-not-allowed">
           {busyKey === 'load' ? '⏳ กำลังบันทึก…'
             : isQueued(`/trips/${active.id}/finish-loading`) ? '🕓 บันทึกแล้ว — รอส่งเมื่อเน็ตกลับ'
@@ -310,7 +322,7 @@ export default function DriverHome() {
           </div>
         )}
         <div className="text-center text-[11px] text-slate-400">
-          เลขไมล์เริ่มถูกบันทึกตอนส่งผลตรวจสภาพรถแล้ว · กดแล้วระบบบันทึกพิกัด GPS ต้นทางอัตโนมัติ
+          เลขไมล์เริ่มถูกบันทึกตอนส่งผลตรวจสภาพรถแล้ว · กดแล้วจะมีหน้ายืนยันให้ถ่ายรูปของบนรถก่อน
         </div>
         {actionRow}
         {sheets}
@@ -333,9 +345,6 @@ export default function DriverHome() {
       {/* งานปัจจุบันใบเดียว — ขาที่ส่งไปแล้วไม่ต้องโชว์ให้คนขับอีก */}
       {(currentLeg ? [currentLeg] : []).map((d) => {
         // นับ "รอส่ง" (คิวออฟไลน์) เป็นส่งแล้วบน UI — กันคนขับกดซ้ำระหว่างรอเน็ต
-        const qKind = (k) => pending.some((p) => p.url === `/drops/${d.id}/receipt` && p.body?.kind === k)
-        const hasFuel = d.receipts.some((r) => r.kind === 'FUEL') || qKind('FUEL')
-        const hasToll = d.receipts.some((r) => r.kind === 'TOLL') || qKind('TOLL')
         const qTarp = isQueued(`/drops/${d.id}/tarp`)
         const qDlv = isQueued(`/drops/${d.id}/delivery`)
         return (
@@ -362,23 +371,10 @@ export default function DriverHome() {
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-2">
-                {/* 1) บิลน้ำมัน — OCR อ่านยอดเป็น Draft */}
-                <EvidenceBtn icon="⛽" label={hasFuel ? 'ส่งบิลน้ำมันแล้ว' : 'บิลน้ำมัน'} done={hasFuel}
-                  busy={busyKey === `fuel-${d.id}`} disabled={locked}
-                  onClick={() => captureThen(`⛽ บิลน้ำมัน จุด ${d.seq}`, async (img) => {
-                    const amt = mockOcr('FUEL')
-                    await uploadReceipt.mutateAsync({ dropId: d.id, kind: 'FUEL', ocr_amount: amt, photo_b64: img })
-                    notify(`🤖 OCR อ่านบิลน้ำมัน ${money(amt)} — Draft รอคนคุมงานยืนยัน`)
-                  })} />
-                {/* 2) บิลทางหลวง */}
-                <EvidenceBtn icon="🛣️" label={hasToll ? 'ส่งบิลทางหลวงแล้ว' : 'บิลทางหลวง'} done={hasToll}
-                  busy={busyKey === `toll-${d.id}`} disabled={locked}
-                  onClick={() => captureThen(`🛣️ บิลทางหลวง จุด ${d.seq}`, async (img) => {
-                    const amt = mockOcr('TOLL')
-                    await uploadReceipt.mutateAsync({ dropId: d.id, kind: 'TOLL', ocr_amount: amt, photo_b64: img })
-                    notify(`🤖 OCR อ่านบิลทางหลวง ${money(amt)} — Draft รอคนคุมงานยืนยัน`)
-                  })} />
-                {/* 3) รูปผ้าใบ (soft — ไม่บังคับก่อนวิ่ง) */}
+                {/* 🧾 บิลน้ำมัน/ทางหลวง ย้ายออกจากตรงนี้แล้ว — ไปอยู่ปุ่ม "อัปบิลระหว่างทาง"
+                    ด้านล่าง ซึ่งกดได้ตลอดทั้ง 🟠 และ 🟢 และส่งได้หลายใบ
+                    (คนขับไม่ต้องรอถึงตอนส่งของเพื่อส่งสลิปอีกแล้ว) */}
+                {/* 1) รูปผ้าใบ (soft — ไม่บังคับก่อนวิ่ง) */}
                 <EvidenceBtn icon="🖼️" label={qTarp ? 'รูปผ้าใบ (รอส่ง)' : d.tarp ? 'ส่งรูปผ้าใบแล้ว' : 'รูปผ้าใบ'}
                   done={d.tarp || qTarp}
                   busy={busyKey === `tarp-${d.id}`} disabled={locked}
@@ -386,7 +382,7 @@ export default function DriverHome() {
                     await uploadTarp.mutateAsync({ dropId: d.id, photo_b64: img })
                     notify(`🖼️ อัปโหลดรูปผ้าใบจุด ${d.seq} สำเร็จ`)
                   })} />
-                {/* 4) รูปส่งของสำเร็จ + GPS ปลายทาง */}
+                {/* 2) รูปส่งของสำเร็จ + GPS ปลายทาง */}
                 <EvidenceBtn icon={qDlv ? '🕓' : '📸'} label={qDlv ? 'ส่งของสำเร็จ (รอส่ง)' : 'ส่งของสำเร็จ'} accent
                   done={qDlv}
                   busy={busyKey === `dlv-${d.id}`} disabled={locked}

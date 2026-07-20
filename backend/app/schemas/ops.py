@@ -4,7 +4,7 @@
 """
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.enums import (
     AdvanceStatus,
@@ -37,12 +37,13 @@ class DropOut(BaseModel):
     id: int
     seq: int
     name: str
-    origin: str = ""        # ต้นทางของงานย่อย เช่น "ลำปาง"
-    destination: str = ""   # ปลายทางของงานย่อย เช่น "กรุงเทพ"
+    origin: str             # ต้นทางของงานย่อย เช่น "ลำปาง" (ห้ามว่าง — บังคับที่ DB ด้วย)
+    destination: str        # ปลายทางของงานย่อย เช่น "กรุงเทพ" (ห้ามว่าง)
     revenue: float = 0                                   # รายได้ของขานี้ (ฐานคิดเบี้ยเลี้ยง)
     difficulty: TripDifficulty = TripDifficulty.MEDIUM   # ความยากรายขา
     allowance: float                                     # = revenue × %ความยาก
     delivered: bool
+    loaded_photo: str | None = None  # URL รูปของที่ขนขึ้นรถ (ถ่ายตอนกดขนของเสร็จ)
     photo: str | None = None   # URL รูปส่งของสำเร็จ (Phase 4) — None = ยังไม่มี
     tarp: str | None = None    # URL รูปผ้าใบ
     gps: str | None
@@ -69,6 +70,7 @@ class TripOut(BaseModel):
     odometer_start: float | None = None  # เลขไมล์เริ่ม (คนขับกรอกตอนเริ่มงาน)
     odometer_start_photo: str | None = None  # URL รูปหน้าปัดไมล์ตอนเริ่มงาน
     odometer_end: float | None = None    # เลขไมล์จบ (ส่งตอนจบงาน)
+    odometer_end_photo: str | None = None  # URL รูปหน้าปัดไมล์ตอนจบงาน
     km_per_liter: float | None = None    # อัตราสิ้นเปลือง กม./ลิตร (None = คิดไม่ได้)
     drops: list[DropOut] = []
     trip_receipts: list[ReceiptOut] = []  # บิลเติมน้ำมันระหว่างทาง (ไม่ผูกจุดส่ง)
@@ -127,6 +129,14 @@ class DropCreate(BaseModel):
     revenue: float = Field(..., gt=0)            # รายได้ต่อขา (บังคับ) — ฐานคิดเบี้ยเลี้ยง
     difficulty: TripDifficulty | None = None     # ไม่ส่ง = ใช้ความยากของทริป
     name: str = ""
+
+    @field_validator("origin", "destination")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        """เว้นวรรคล้วน (" ") ผ่าน min_length ได้ — ต้อง trim แล้วเช็กซ้ำถึงจะกันได้จริง"""
+        if not v.strip():
+            raise ValueError("ต้องกรอกทั้งต้นทางและปลายทาง — เว้นว่างไม่ได้")
+        return v.strip()
 
     def label(self) -> str:
         return self.name.strip() or f"{self.origin.strip()} → {self.destination.strip()}"
@@ -201,44 +211,82 @@ class GeoRequest(BaseModel):
 
 class StartTripRequest(GeoRequest):
     """เริ่มงาน (ขนของขึ้นเสร็จ) — เลขไมล์เริ่ม/รูปหน้าปัดถูกบันทึกไปแล้วตอนส่งผลตรวจสภาพรถ
-    ส่งซ้ำได้ (optional) เพื่อแก้ค่า · ไม่ส่ง = ใช้ค่าที่บันทึกไว้ · ทริปที่ยังไม่มีค่า = เริ่มงานไม่ได้"""
+    ส่งซ้ำได้ (optional) เพื่อแก้ค่า · ไม่ส่ง = ใช้ค่าที่บันทึกไว้ · ทริปที่ยังไม่มีค่า = เริ่มงานไม่ได้
+
+    **loaded_photo_b64 บังคับ** — รูปของที่ขนขึ้นรถแล้ว (ถ่ายในหน้ายืนยันก่อนเปลี่ยนเป็นสีเขียว)
+    """
     odometer_start: float | None = Field(None, ge=0)
     odometer_photo_b64: str | None = None
+    loaded_photo_b64: str = Field(..., min_length=1)
 
 
 # --------------------------- Evidence ---------------------------
 class ReceiptUploadRequest(BaseModel):
+    """คนขับอัปรูปบิล — **ไม่มี OCR แล้ว** (ปิดการอ่านยอด/วันที่อัตโนมัติ)
+
+    คนขับส่งได้แค่ "รูปบิล" (บังคับ) · ยอดเงินและวันที่บนบิลเป็น 0/None เสมอ
+    รอ Supervisor เปิดรูปดูแล้วพิมพ์เองตอนยืนยัน (ดู ReceiptApproveRequest)
+    """
     kind: ReceiptKind
-    ocr_amount: float | None = None  # ผลอ่าน OCR (จำลอง) — ตั้งเป็น draft
-    ocr_date: str | None = None
+    photo_b64: str = Field(..., min_length=1)  # รูปถ่ายใบเสร็จจริง (บังคับ — ไม่มีรูป = ตรวจไม่ได้)
     captured_at: datetime | None = None  # เวลาอัปโหลดจริงตอนออฟไลน์ (Offline Auto-Sync)
-    photo_b64: str | None = None         # รูปถ่ายใบเสร็จจริง (Phase 4)
     liters: float | None = Field(None, ge=0)  # จำนวนลิตร (บิลน้ำมัน) — ใช้คิด km/L
 
 
 class FuelLogRequest(BaseModel):
-    """แจ้งเติมน้ำมันระหว่างทริป — รูปสลิป (Base64) + จำนวนลิตร (บังคับทั้งคู่)"""
+    """แจ้งเติมน้ำมันระหว่างทริป — รูปสลิป (Base64) + จำนวนลิตร (บังคับทั้งคู่)
+
+    ยอดเงินไม่รับจากคนขับแล้ว (ปิด OCR) — Supervisor กรอกเองตอนยืนยันบิล
+    """
     photo_b64: str = Field(..., min_length=1)   # รูปสลิปน้ำมัน
     liters: float = Field(..., gt=0)            # จำนวนลิตรที่เติม
-    ocr_amount: float | None = None             # ยอดเงินจาก OCR (จำลอง) — draft รออนุมัติ
-    ocr_date: str | None = None
     captured_at: datetime | None = None         # เวลาเติมจริงตอนออฟไลน์
 
 
+class TripReceiptRequest(BaseModel):
+    """อัปบิลระหว่างทาง (Mid-Trip) — ใช้ได้ตลอดเวลาที่คนขับยังวิ่งงานอยู่ (🟠 และ 🟢)
+
+    ต่างจากบิลรายจุดส่ง (/drops/{id}/receipt) ที่ 1 จุดมีได้อย่างละ 1 ใบ:
+    ใบพวกนี้ผูกกับ "ทริป" ตรงๆ อัปกี่ใบก็ได้ ไม่ชนกัน
+    (แวะปั๊ม → ถ่ายสลิปส่งเลย ไม่ต้องรอส่งของเสร็จ)
+
+    ยอดเงิน/วันที่ไม่รับจากคนขับ (ปิด OCR) — Supervisor เปิดรูปแล้วคีย์เองตอนยืนยัน
+    """
+    kind: ReceiptKind                            # FUEL (น้ำมัน) หรือ TOLL (ทางหลวง)
+    photo_b64: str = Field(..., min_length=1)    # รูปบิล/สลิป (บังคับ)
+    liters: float | None = Field(None, gt=0)     # จำนวนลิตร — บังคับเฉพาะบิลน้ำมัน
+    captured_at: datetime | None = None          # เวลาที่กดจริงตอนออฟไลน์
+
+
 class EndTripRequest(BaseModel):
-    """จบงาน — ส่งเลขไมล์จบเพื่อคิดระยะทางและ km/L"""
+    """จบงาน — ส่งเลขไมล์จบ + **รูปหน้าปัดไมล์ (บังคับ)** เพื่อคิดระยะทางและ km/L
+
+    รูปหน้าปัดตอนจบเป็นหลักฐานคู่กับเลขที่คนขับพิมพ์ (ไว้ให้แอดมินเทียบย้อนหลัง)
+    ขาดรูป = ส่งจบงานไม่ได้ (422 ตั้งแต่ schema)
+    """
     odometer_end: float = Field(..., ge=0)
+    odometer_photo_b64: str = Field(..., min_length=1)  # รูปหน้าปัดไมล์ตอนจบ (บังคับ)
     force: bool = False                          # ยืนยันเมื่อยังส่งของไม่ครบ
 
 
 class TarpUploadRequest(BaseModel):
-    """อัปรูปผ้าใบ (Phase 4) — body ทั้งก้อน optional เพื่อ backward-compat"""
-    photo_b64: str | None = None
+    """อัปรูปผ้าใบ — บังคับแนบรูปจริง (เก็บ URL ไฟล์ลง DB ไม่ใช่ธง boolean)"""
+    photo_b64: str = Field(..., min_length=1)
     captured_at: datetime | None = None
 
 
+class DeliveryRequest(GeoRequest):
+    """ส่งของสำเร็จ 1 จุด — บังคับแนบรูปหลักฐานจริงคู่กับพิกัดปลายทาง"""
+    photo_b64: str = Field(..., min_length=1)
+
+
 class ReceiptApproveRequest(BaseModel):
-    amount: float | None = None  # แก้ยอดก่อนอนุมัติได้
+    """Supervisor เปิดรูปบิลดู แล้ว **พิมพ์ยอดเงิน + วันที่เอง** (แทน OCR)
+
+    บังคับทั้งคู่ — ปล่อยว่างไม่ได้ เพราะไม่มีค่าจาก OCR มาให้เป็น default อีกแล้ว
+    """
+    amount: float = Field(..., ge=0)          # ยอดเงินบนบิล (คนกรอกเอง)
+    date: str = Field(..., min_length=1)      # วันที่บนบิล (คนกรอกเอง) เช่น "2026-07-19"
 
 
 class ReceiptEditRequest(BaseModel):

@@ -9,6 +9,7 @@ import { initRealtime } from './realtime/socket'
 import Shell from './layout/Shell'
 import LoginPage from './pages/LoginPage'
 import DriverHome from './pages/DriverHome'
+import MyHistoryPage from './pages/MyHistoryPage'
 import Dashboard from './pages/Dashboard'
 import DispatchPage from './pages/DispatchPage'
 import UsersPage from './pages/UsersPage'
@@ -42,6 +43,8 @@ function AppRoutes() {
       <Route path="/login" element={user ? <Navigate to={homeFor(user.role)} replace /> : <LoginPage />} />
       <Route element={<Protected><Shell /></Protected>}>
         <Route path="/driver" element={<Protected roles={['DRIVER']}><DriverHome /></Protected>} />
+        {/* ประวัติงาน+เงินของคนขับเอง — backend ปล่อยให้ดูได้เฉพาะ id ตัวเอง */}
+        <Route path="/my-history" element={<Protected roles={['DRIVER']}><MyHistoryPage /></Protected>} />
         <Route path="/dashboard" element={<Protected roles={SUP}><Dashboard /></Protected>} />
         <Route path="/dispatch" element={<Protected roles={SUP}><DispatchPage /></Protected>} />
         <Route path="/pending-review" element={<Protected roles={SUP}><PendingReviewPage /></Protected>} />

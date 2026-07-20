@@ -11,8 +11,8 @@ from app.database import get_db
 from app.deps import get_current_user, get_drop, require_supervisor
 from app.models import Drop, Receipt, Role, User
 from app.schemas.ops import (
+    DeliveryRequest,
     DropOut,
-    GeoRequest,
     ReceiptApproveRequest,
     ReceiptEditRequest,
     ReceiptOut,
@@ -44,12 +44,14 @@ def upload_receipt_ep(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """อัปบิลน้ำมัน/ทางหลวงรายจุด → Receipt draft (approved=False)"""
+    """อัปรูปบิลน้ำมัน/ทางหลวงรายจุด → Receipt draft (ยอด 0 · ไม่มี OCR)
+
+    คนขับส่งแค่รูป · ยอดเงิน + วันที่ Supervisor กรอกเองตอนยืนยัน
+    """
     _assert_own_driver(drop, user)
     try:
         return upload_receipt(
             db, drop, user, body.kind,
-            ocr_amount=body.ocr_amount, ocr_date=body.ocr_date,
             captured_at=body.captured_at, photo_b64=body.photo_b64,
             liters=body.liters,
         )
@@ -64,12 +66,12 @@ def approve_receipt_ep(
     db: Session = Depends(get_db),
     actor: User = Depends(require_supervisor),
 ):
-    """อนุมัติยอดบิล (Supervisor+ เท่านั้น) → นับเข้ายอดจริง"""
+    """ยืนยันบิล (Supervisor+) — เปิดรูปดูแล้ว **กรอกยอดเงิน + วันที่เอง** → นับเข้ายอดจริง"""
     receipt = db.get(Receipt, receipt_id)
     if not receipt:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "ไม่พบบิล")
     try:
-        return approve_receipt(db, receipt, actor, amount=body.amount)
+        return approve_receipt(db, receipt, actor, amount=body.amount, date=body.date)
     except EvidenceError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
@@ -93,27 +95,30 @@ def edit_receipt_amount_ep(
 
 @router.post("/drops/{drop_id}/tarp", response_model=DropOut)
 def upload_tarp_ep(
-    body: TarpUploadRequest | None = None,
+    body: TarpUploadRequest,
     drop: Drop = Depends(get_drop),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """อัปรูปผ้าใบรายจุด (Driver เจ้าของทริป) — Phase 4: แนบรูปจริงเป็น Base64"""
+    """อัปรูปผ้าใบรายจุด (Driver เจ้าของทริป) — บังคับแนบรูปจริง (Base64) เก็บเป็น URL"""
     _assert_own_driver(drop, user)
     try:
-        return upload_tarp(db, drop, user, photo_b64=body.photo_b64 if body else None)
+        return upload_tarp(db, drop, user, photo_b64=body.photo_b64)
     except (EvidenceError, StorageError) as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
 @router.post("/drops/{drop_id}/delivery", response_model=DropOut)
 def record_delivery_ep(
-    body: GeoRequest,
+    body: DeliveryRequest,
     drop: Drop = Depends(get_drop),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """รูปส่งของสำเร็จรายจุด (Driver เจ้าของทริป) → mark delivered + GPS ปลายทาง"""
+    """รูปส่งของสำเร็จรายจุด (Driver เจ้าของทริป) → mark delivered + GPS ปลายทาง
+
+    บังคับแนบรูปจริง — เก็บ URL ไฟล์ลง DB (ไม่มี marker "attached" แล้ว)
+    """
     _assert_own_driver(drop, user)
     try:
         return record_delivery(

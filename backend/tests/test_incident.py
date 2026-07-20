@@ -16,7 +16,7 @@ from app.services.state_machine import (
     finish_loading,
     record_delivery,
 )
-from tests.conftest import ODO_PHOTO, pass_inspection
+from tests.conftest import PHOTO, ODO_PHOTO, pass_inspection
 
 
 @pytest.fixture()
@@ -38,12 +38,12 @@ def _mk_green_trip(db, driver, supervisor, n_drops=2):
     db.add(trip)
     db.commit()
     for i in range(1, n_drops + 1):
-        db.add(Drop(trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=300))
+        db.add(Drop(origin="ต้นทาง", destination="ปลายทาง", trip_id=trip.id, seq=i, name=f"จุด {i}", allowance=300))
     db.commit()
     db.refresh(trip)
     assign_trip(db, trip, "1กก-1234", supervisor)
     pass_inspection(db, trip, driver)
-    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO)
+    finish_loading(db, trip, driver, 13.75, 100.5, odometer_start=1000, odometer_photo_b64=ODO_PHOTO, loaded_photo_b64=PHOTO)
     return trip
 
 
@@ -59,7 +59,7 @@ def test_sos_pauses_trip_and_alerts(db_session, driver, supervisor):
 
     # ระหว่าง pause ทำอะไรต่อไม่ได้เลย
     with pytest.raises(TransitionError):
-        record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6)
+        record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6, photo_b64=PHOTO)
     with pytest.raises(TransitionError):
         close_trip(db_session, trip, supervisor, force=True)
 
@@ -79,7 +79,7 @@ def test_resolve_unpauses(db_session, driver, supervisor):
     assert inc.status is IncidentStatus.RESOLVED
     assert trip.paused is False
     # วิ่งต่อได้จริง
-    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6)
+    record_delivery(db_session, trip.drops[0], driver, 13.8, 100.6, photo_b64=PHOTO)
     assert trip.drops[0].delivered
 
 
